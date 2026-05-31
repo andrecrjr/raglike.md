@@ -8,15 +8,12 @@ A high-performance, local semantic search engine for Markdown documentation. Bui
 
 ## 🏗️ Architecture
 
-The system follows a "RAG-lite" (Retrieval-Augmented Generation) architecture, focusing on the retrieval layer:
+The system follows a "RAG-lite" (Retrieval-Augmented Generation) architecture, focusing on the retrieval layer. For detailed information, see our [Architecture Documentation](docs/architecture/overview.md).
 
-1.  **Crawler:** Recursively scans the `./docs` directory for `.md` files.
-2.  **Parser:** Segments files based on Markdown headings (`##`, `###`, etc.) to create granular chunks.
-3.  **Embedding Engine:** Uses `@xenova/transformers` to run the `all-MiniLM-L6-v2` model locally. No API keys are required; everything stays on your machine.
-4.  **Vector Store:** Uses `PGlite` with the `pgvector` extension. It's a WASM-powered Postgres build that runs inside the Bun process, providing industry-standard vector similarity search (`<=>` cosine distance).
-5.  **Delivery Layer:** 
-    *   **MCP Server:** Standard Stdio transport for integration with AI tools (Cursor, Claude, etc.).
-    *   **REST API:** Simple HTTP POST endpoint for custom integrations.
+- **[Overview](docs/architecture/overview.md)**: High-level system design and component breakdown.
+- **[Vector Engine](docs/architecture/vector-engine.md)**: Deep dive into PGlite, embeddings, and indexing.
+- **[Server Modes](docs/architecture/server-modes.md)**: Details on MCP vs HTTP API configurations.
+- **[Search Protocol](docs/architecture/protocol.md)**: API and tool communication specifications.
 
 ---
 

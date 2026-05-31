@@ -48,6 +48,11 @@ export class VectorEngine {
     for (const filePath of targetFiles) {
       const relativePath = path.relative(process.cwd(), filePath);
       const rawContent = fs.readFileSync(filePath, "utf-8");
+      
+      // Extract H1 title if present
+      const h1Match = rawContent.match(/^# (.*)$/m);
+      const h1Title = h1Match ? h1Match[1].trim() : "";
+
       const sections = rawContent.split(/(?=^##+ )/m);
 
       for (const section of sections) {
@@ -56,7 +61,9 @@ export class VectorEngine {
         const content = lines.slice(1).join("\n").trim();
 
         if (content.length > 5) {
-          const vectorString = await this.generateEmbeddingString(`${heading}\n${content}`);
+          // Prepend H1 context to improve semantic search relevancy
+          const contextPrefix = h1Title && !heading.includes(h1Title) ? `${h1Title} > ` : "";
+          const vectorString = await this.generateEmbeddingString(`${contextPrefix}${heading}\n${content}`);
           await this.pg.query(
             "INSERT INTO markdown_chunks (file_path, heading, content, embedding) VALUES ($1, $2, $3, $4)",
             [relativePath, heading, content, vectorString]
