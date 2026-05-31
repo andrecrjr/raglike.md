@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Doc Search</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        [v-cloak] { display: none; }
+    </style>
+</head>
+<body class="bg-[#f8fafc] min-h-screen text-slate-900 font-sans selection:bg-blue-100 selection:text-blue-900">
+    <div class="max-w-4xl mx-auto px-4 py-16">
+        <header class="text-center mb-16 space-y-4">
+            <div class="inline-block px-4 py-1.5 mb-2 rounded-full bg-blue-50 text-blue-600 text-sm font-bold tracking-wide uppercase">
+                Vector Search Engine
+            </div>
+            <h1 class="text-5xl font-black text-slate-900 tracking-tight leading-tight">
+                MCP Doc <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">Retrieval</span>
+            </h1>
+            <p class="text-slate-500 text-xl max-w-2xl mx-auto font-medium">
+                Instant semantic search across your technical documentation.
+            </p>
+        </header>
+
+        <main>
+            <div class="relative group mb-12">
+                <div class="absolute -inset-1 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl blur opacity-25 group-focus-within:opacity-50 transition duration-1000 group-focus-within:duration-200"></div>
+                <div class="relative flex flex-col md:flex-row gap-3">
+                    <div class="relative flex-grow">
+                        <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                            <svg class="h-5 w-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                        </div>
+                        <input 
+                            type="text" 
+                            id="searchQuery" 
+                            placeholder="How does the system initialize?" 
+                            class="w-full pl-11 p-5 rounded-xl bg-white border border-slate-200 shadow-sm focus:ring-0 focus:border-blue-500 outline-none transition-all text-lg"
+                        >
+                    </div>
+                    <button 
+                        id="searchButton"
+                        class="bg-slate-900 hover:bg-slate-800 text-white font-bold px-10 py-5 rounded-xl shadow-xl hover:shadow-2xl transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+                    >
+                        <span>Search</span>
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <div id="loading" class="hidden text-center py-12">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent"></div>
+                <p class="mt-2 text-slate-500">Searching documents...</p>
+            </div>
+
+            <div id="results" class="space-y-6">
+                <!-- Results will be injected here -->
+            </div>
+
+            <div id="noResults" class="hidden text-center py-12 text-slate-500 italic">
+                No matching documents found.
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const searchInput = document.getElementById('searchQuery');
+        const searchButton = document.getElementById('searchButton');
+        const resultsContainer = document.getElementById('results');
+        const loadingSpinner = document.getElementById('loading');
+        const noResultsMessage = document.getElementById('noResults');
+
+        async function performSearch() {
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            // Reset UI
+            resultsContainer.innerHTML = '';
+            noResultsMessage.classList.add('hidden');
+            loadingSpinner.classList.remove('hidden');
+            searchButton.disabled = true;
+
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query, limit: 10 }),
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.results && data.results.length > 0) {
+                    data.results.forEach(result => {
+                        const card = document.createElement('div');
+                        card.className = 'bg-white p-6 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow';
+                        
+                        // Cosine distance: 0 is exact match, 2 is opposite.
+                        // We'll show a "Confidence" score based on (1 - distance).
+                        const score = Math.max(0, (1 - result.distance) * 100).toFixed(1);
+                        
+                        card.innerHTML = `
+                            <div class="flex justify-between items-start mb-4">
+                                <div>
+                                    <h3 class="text-lg font-bold text-blue-600 mb-1">${result.heading}</h3>
+                                    <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">${result.file_path}</p>
+                                </div>
+                                <span class="bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap">${score}% Match</span>
+                            </div>
+                            <div class="prose prose-slate max-w-none">
+                                <p class="text-slate-700 leading-relaxed whitespace-pre-wrap">${result.content}</p>
+                            </div>
+                        `;
+                        resultsContainer.appendChild(card);
+                    });
+                } else {
+                    noResultsMessage.classList.remove('hidden');
+                }
+            } catch (error) {
+                console.error('Search error:', error);
+                resultsContainer.innerHTML = '<div class="bg-red-50 text-red-700 p-4 rounded-lg border border-red-200">' +
+                    'Failed to perform search. Please ensure the API is running.' +
+                '</div>';
+            } finally {
+                loadingSpinner.classList.add('hidden');
+                searchButton.disabled = false;
+            }
+        }
+
+        searchButton.addEventListener('click', performSearch);
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') performSearch();
+        });
+    </script>
+</body>
+</html>
