@@ -1,6 +1,6 @@
 # Project Roadmap & Improvements
 
-This document tracks planned features and enhancements for the `search-docs-api` project, prioritized by implementation complexity.
+This document tracks planned features and enhancements for the `raglike-md` project, prioritized by implementation complexity.
 
 ## 🟢 Phase 1: High Impact / Low Complexity (Easiest)
 

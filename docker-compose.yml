@@ -1,5 +1,5 @@
 services:
-  search-docs-api:
+  raglike-md:
     build: .
     ports:
       - "4321:4321"

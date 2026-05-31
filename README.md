@@ -1,8 +1,8 @@
-# search-docs-api 🚀
+# raglike-md 🚀
 
 A high-performance, local semantic search engine for Markdown documentation. Built with **Bun**, **PGlite (pgvector)**, and **Xenova Transformers**.
 
-`search-docs-api` recursively crawls your documentation folders, generates embeddings locally using the `all-MiniLM-L6-v2` model, and provides a semantic search interface via **Model Context Protocol (MCP)** or a **REST API**.
+`raglike-md` recursively crawls your documentation folders, generates embeddings locally using the `all-MiniLM-L6-v2` model, and provides a semantic search interface via **Model Context Protocol (MCP)** or a **REST API**.
 
 ---
 
@@ -19,11 +19,11 @@ The system follows a "RAG-lite" (Retrieval-Augmented Generation) architecture, f
 
 ## 🐳 Running with Docker (Recommended)
 
-Docker is the easiest way to run `search-docs-api` as it comes pre-packaged with all native dependencies and model weights.
+Docker is the easiest way to run `raglike-md` as it comes pre-packaged with all native dependencies and model weights.
 
 ### 1. Build the Image
 ```bash
-docker build -t search-docs-api .
+docker build -t raglike-md .
 ```
 
 ### 2. Run as a REST API
@@ -32,8 +32,8 @@ Mount your local documentation folder to the container's `/app/docs` directory:
 docker run -d \
   -p 4321:4321 \
   -v /path/to/your/docs:/app/docs \
-  --name search-docs-api \
-  search-docs-api --api
+  --name raglike-md \
+  raglike-md --api
 ```
 
 ### 4. Run with Environment Variables
@@ -44,15 +44,15 @@ docker run -d \
   -e ENABLE_API=true \
   -e ENABLE_MCP=true \
   -v /path/to/your/docs:/app/docs \
-  --name search-docs-api \
-  search-docs-api
+  --name raglike-md \
+  raglike-md
 ```
 
 ### 5. Using Docker Compose
 A `docker-compose.yml` is provided:
 ```yaml
 services:
-  search-docs-api:
+  raglike-md:
     build: .
     ports:
       - "4321:4321"

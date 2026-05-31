@@ -6,7 +6,7 @@ import { logger } from "./logger";
 
 export async function startMcpServer(engine: VectorEngine) {
   const server = new Server(
-    { name: "search-docs-api", version: "1.0.0" },
+    { name: "raglike-md", version: "1.0.0" },
     { capabilities: { tools: {} } }
   );
 
