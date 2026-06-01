@@ -26,28 +26,35 @@ The system follows a "RAG-lite" (Retrieval-Augmented Generation) architecture, f
 - **[Architecture Overview](docs/architecture/overview.md)**: High-level system design and component breakdown.
 - **[Server Modes & Usage](docs/architecture/server-modes.md)**: Deep dive into MCP Tools and API Endpoints.
 - **[Search Protocol](docs/architecture/protocol.md)**: API and MCP tool communication specifications.
+- **[MCP Client Setup Guide](docs/guides/mcp-client-setups.md)**: Configuration for Cursor, Claude Code, Windsurf, and more.
+- **[MCP HTTP Stream Guide](docs/guides/mcp-http-stream.md)**: Deep dive into using MCP over HTTP/SSE.
 
 ---
 
-## 📡 Model Context Protocol (MCP) Setup
+## 🚀 Running MCP with Docker (Recommended)
 
-`raglike-md` can be used as a tool provider for AI assistants like Claude Desktop.
+The most portable way to use `raglike-md` with AI tools (Cursor, Claude Code, etc.) is via **SSE (Server-Sent Events)** inside Docker.
 
-Add this to your `claude_desktop_config.json`:
+1. **Start the server:**
+   ```bash
+   docker run -d \
+     -p 4321:4321 \
+     -e ENABLE_API=true \
+     -e ENABLE_MCP=true \
+     -v $(pwd)/docs:/app/docs \
+     raglike-md
+   ```
 
-```json
-{
-  "mcpServers": {
-    "raglike-md": {
-      "command": "bun",
-      "args": ["run", "/path/to/raglike-md/src/index.ts", "--mcp"],
-      "env": {
-        "POSTGRES_URL": "postgres://user:pass@localhost:5432/raglike"
-      }
-    }
-  }
-}
-```
+2. **Quick Config:**
+
+| Tool | Type | URL |
+| :--- | :--- | :--- |
+| **Cursor** | SSE | `http://localhost:4321/mcp` |
+| **Claude Code** | SSE | `claude mcp add --transport sse raglike http://localhost:4321/mcp` |
+| **Windsurf** | SSE | `url: http://localhost:4321/mcp` in `mcp_config.json` |
+| **Cline** | SSE | Add Remote Server: `http://localhost:4321/mcp` |
+
+See the **[MCP Client Setup Guide](docs/guides/mcp-client-setups.md)** for detailed tool-specific instructions.
 
 ---
 
