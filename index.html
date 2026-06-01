@@ -3,128 +3,163 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>raglike-md | Semantic Docs Search</title>
+    <title>raglike-md | Intelligent Knowledge Base</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); }
+        .glass { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.3); }
+        .gradient-text { background: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .card-shadow { box-shadow: 0 10px 40px -10px rgba(0,0,0,0.05); }
+        .card-hover:hover { transform: translateY(-4px); box-shadow: 0 20px 50px -12px rgba(99, 102, 241, 0.12); }
         [v-cloak] { display: none; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f8fafc; }
+        ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
     </style>
 </head>
-<body class="bg-slate-50 min-h-screen text-slate-900 selection:bg-indigo-100 selection:text-indigo-700">
+<body class="bg-[#fdfdff] min-h-screen text-slate-900 selection:bg-indigo-100 selection:text-indigo-700">
     <!-- Modal for Full Document -->
-    <div id="modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-slate-900/40 backdrop-blur-sm">
-        <div class="bg-white w-full max-w-5xl h-full max-h-[90vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-            <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0">
+    <div id="modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-slate-900/40 backdrop-blur-md transition-all duration-300">
+        <div class="bg-white w-full max-w-5xl h-full max-h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden border border-slate-100">
+            <div class="px-8 py-6 border-b border-slate-50 flex justify-between items-center bg-white/80 backdrop-blur-md sticky top-0 z-10">
                 <div>
-                    <h2 id="modalTitle" class="text-xl font-bold text-slate-900">Document Content</h2>
-                    <p id="modalPath" class="text-xs font-medium text-slate-400 uppercase tracking-widest mt-0.5"></p>
+                    <h2 id="modalTitle" class="text-2xl font-extrabold text-slate-900 tracking-tight">Document Content</h2>
+                    <p id="modalPath" class="text-[10px] font-bold text-indigo-500 uppercase tracking-[0.2em] mt-1"></p>
                 </div>
-                <button onclick="closeModal()" class="p-2 hover:bg-slate-100 rounded-lg transition-colors">
+                <button onclick="closeModal()" class="p-3 hover:bg-slate-100 rounded-2xl transition-all active:scale-90">
                     <svg class="w-6 h-6 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" />
                     </svg>
                 </button>
             </div>
-            <div id="modalBody" class="flex-grow overflow-y-auto p-8 prose prose-slate max-w-none">
-                <pre id="rawContent" class="whitespace-pre-wrap text-slate-700 font-sans"></pre>
+            <div id="modalBody" class="flex-grow overflow-y-auto p-10 prose prose-slate max-w-none">
+                <pre id="rawContent" class="whitespace-pre-wrap text-slate-700 font-sans leading-relaxed"></pre>
             </div>
         </div>
     </div>
 
-    <div class="max-w-5xl mx-auto px-6 py-12 md:py-24">
-        <!-- Header -->
-        <header class="text-center mb-16">
-            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 text-indigo-600 text-[10px] font-extrabold uppercase tracking-[0.2em] mb-4">
-                <span class="relative flex h-2 w-2">
-                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                    <span class="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
-                </span>
-                High Performance Search
+    <div class="max-w-6xl mx-auto px-6 py-12 md:py-20">
+        <!-- Navigation/Status -->
+        <nav class="flex justify-between items-center mb-16">
+            <div class="flex items-center gap-2">
+                <div class="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-200">
+                    <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                </div>
+                <span class="text-xl font-black text-slate-900 tracking-tighter">raglike<span class="text-indigo-600">.md</span></span>
             </div>
-            <h1 class="text-4xl md:text-6xl font-extrabold text-slate-900 tracking-tight mb-4">
-                raglike<span class="text-indigo-600">.md</span>
+            <div class="hidden md:flex items-center gap-6">
+                <span id="docCount" class="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1.5 rounded-full">Connecting...</span>
+                <a href="https://github.com" target="_blank" class="text-slate-400 hover:text-slate-600 transition-colors">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                </a>
+            </div>
+        </nav>
+
+        <!-- Header -->
+        <header class="mb-16">
+            <h1 class="text-5xl md:text-7xl font-extrabold text-slate-900 tracking-tight mb-6 leading-[1.1]">
+                Search your docs like <br/><span class="gradient-text">never before.</span>
             </h1>
-            <p class="text-slate-500 text-lg md:text-xl max-w-2xl mx-auto leading-relaxed">
-                Hybrid semantic retrieval with smart chunking and HNSW indexing for your technical documentation.
+            <p class="text-slate-500 text-xl md:text-2xl max-w-3xl leading-relaxed font-medium">
+                Instant, semantic answers from your own knowledge base. Upload, search, and manage your technical documents in one place.
             </p>
         </header>
 
-        <!-- Search Bar -->
-        <div class="sticky top-6 z-40 mb-12">
+        <!-- Unified Action Bar -->
+        <div class="sticky top-6 z-40 mb-20">
             <div class="flex flex-col md:flex-row gap-4">
                 <div class="relative group flex-grow">
-                    <div class="absolute -inset-1 bg-gradient-to-r from-indigo-500 via-blue-500 to-indigo-500 rounded-3xl blur opacity-20 group-focus-within:opacity-40 transition duration-500"></div>
-                    <div class="relative flex items-center bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-200 p-2 overflow-hidden">
-                        <div class="flex items-center flex-grow pl-4">
-                            <svg class="h-6 w-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    <div class="absolute -inset-1 bg-gradient-to-r from-indigo-500 via-blue-500 to-indigo-500 rounded-[2rem] blur opacity-20 group-focus-within:opacity-40 transition duration-500"></div>
+                    <div class="relative flex items-center bg-white rounded-[1.8rem] shadow-xl border border-slate-100 p-2 overflow-hidden">
+                        <div class="flex items-center flex-grow pl-5">
+                            <svg class="h-6 w-6 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                             </svg>
                             <input 
                                 type="text" 
                                 id="searchQuery" 
-                                placeholder="Ask about architecture, setup, or features..." 
-                                class="w-full bg-transparent border-none focus:ring-0 px-4 py-4 text-lg md:text-xl font-medium placeholder:text-slate-300 outline-none"
+                                placeholder="What would you like to know?" 
+                                class="w-full bg-transparent border-none focus:ring-0 px-4 py-5 text-xl font-bold placeholder:text-slate-300 outline-none"
                                 autocomplete="off"
                             >
                         </div>
                         <button 
                             id="searchButton"
-                            class="hidden md:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-xl font-bold transition-all active:scale-95 shadow-lg shadow-indigo-200"
+                            class="hidden md:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-10 py-5 rounded-[1.4rem] font-black transition-all active:scale-95 shadow-lg shadow-indigo-100"
                         >
-                            Search
-                            <kbd class="hidden lg:inline-flex items-center h-5 px-1.5 font-sans text-[10px] font-medium text-indigo-300 border border-indigo-400 rounded bg-indigo-500">⏎</kbd>
+                            Find
+                            <kbd class="hidden lg:inline-flex items-center h-6 px-2 font-sans text-[10px] font-bold text-indigo-200 border border-indigo-500 rounded-lg bg-indigo-500">⏎</kbd>
                         </button>
                     </div>
                 </div>
                 <div class="flex shrink-0">
-                    <input type="file" id="pdfInput" class="hidden" accept="application/pdf">
+                    <input type="file" id="fileInput" class="hidden" accept=".pdf,.md">
                     <button 
-                        onclick="document.getElementById('pdfInput').click()"
-                        class="flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-6 py-4 rounded-2xl font-bold transition-all active:scale-95 shadow-sm"
+                        onclick="document.getElementById('fileInput').click()"
+                        class="flex items-center gap-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-8 py-5 rounded-[1.8rem] font-bold transition-all active:scale-95 shadow-sm group"
                     >
-                        <svg class="w-5 h-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                        </svg>
-                        Upload PDF
+                        <div class="p-2 bg-indigo-50 rounded-xl group-hover:bg-indigo-100 transition-colors">
+                            <svg class="w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
+                            </svg>
+                        </div>
+                        Add Knowledge
                     </button>
                 </div>
             </div>
         </div>
 
-        <!-- Feedback & Results -->
-        <div id="loading" class="hidden text-center py-20">
-            <div class="inline-flex items-center gap-3 px-6 py-3 rounded-full bg-white border border-slate-100 shadow-sm">
-                <div class="animate-spin rounded-full h-4 w-4 border-2 border-indigo-500 border-t-transparent"></div>
-                <span id="loadingText" class="text-slate-600 font-semibold text-sm">Traversing vector space...</span>
+        <!-- Search Results Section -->
+        <div id="resultsSection" class="hidden mb-24">
+            <div class="flex items-center justify-between mb-10">
+                <h2 class="text-3xl font-extrabold text-slate-900 tracking-tight">Best Matches</h2>
+                <button onclick="clearSearch()" class="text-sm font-bold text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-2">
+                    Clear Results
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
             </div>
-        </div>
-
-        <div id="results" class="grid grid-cols-1 gap-6 mb-12">
-            <!-- Cards will appear here -->
-        </div>
-
-        <div id="noResults" class="hidden text-center py-24 bg-white rounded-3xl border-2 border-dashed border-slate-100 mb-12">
-            <div class="text-slate-300 mb-4 flex justify-center">
-                <svg class="w-16 h-16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9.172 9.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
+            
+            <div id="loading" class="hidden flex justify-center py-20">
+                <div class="flex flex-col items-center gap-4">
+                    <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                    <span id="loadingText" class="text-slate-500 font-bold text-sm tracking-widest uppercase">Thinking...</span>
+                </div>
             </div>
-            <p class="text-slate-500 text-lg font-medium">No chunks found for this query.</p>
-            <p class="text-slate-400 text-sm mt-1">Try broader terms or technical keywords.</p>
+
+            <div id="results" class="grid grid-cols-1 gap-8">
+                <!-- Cards will appear here -->
+            </div>
+
+            <div id="noResults" class="hidden text-center py-24 bg-white rounded-[3rem] border-2 border-dashed border-slate-100 shadow-sm">
+                <div class="text-slate-200 mb-6 flex justify-center">
+                    <svg class="w-20 h-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                </div>
+                <p class="text-slate-500 text-xl font-bold">We couldn't find a direct match.</p>
+                <p class="text-slate-400 font-medium mt-2">Try rephrasing your question or using broader keywords.</p>
+            </div>
         </div>
 
         <!-- Knowledge Base -->
-        <section class="mt-12">
-            <div class="flex items-center justify-between mb-8">
-                <h2 class="text-2xl font-extrabold text-slate-900 tracking-tight">Knowledge Base</h2>
-                <span id="docCount" class="text-xs font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded">0 Documents</span>
+        <section>
+            <div class="flex items-center justify-between mb-10">
+                <div>
+                    <h2 class="text-3xl font-extrabold text-slate-900 tracking-tight">Library</h2>
+                    <p class="text-slate-400 font-medium mt-1">Manage your indexed documentation</p>
+                </div>
             </div>
-            <div id="docList" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div id="docList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 <!-- Doc items will appear here -->
+            </div>
+            <div id="emptyLibrary" class="hidden text-center py-20 bg-slate-50 rounded-[3rem] border border-slate-100">
+                <p class="text-slate-400 font-bold">Your library is empty. Start by adding a document!</p>
             </div>
         </section>
     </div>
@@ -133,29 +168,35 @@
         const searchInput = document.getElementById('searchQuery');
         const searchButton = document.getElementById('searchButton');
         const resultsContainer = document.getElementById('results');
+        const resultsSection = document.getElementById('resultsSection');
         const loadingSpinner = document.getElementById('loading');
         const loadingText = document.getElementById('loadingText');
         const noResultsMessage = document.getElementById('noResults');
         const modal = document.getElementById('modal');
-        const pdfInput = document.getElementById('pdfInput');
+        const fileInput = document.getElementById('fileInput');
         const docList = document.getElementById('docList');
         const docCount = document.getElementById('docCount');
+        const emptyLibrary = document.getElementById('emptyLibrary');
 
         async function performSearch() {
             const query = searchInput.value.trim();
             if (!query) return;
 
+            resultsSection.classList.remove('hidden');
             resultsContainer.innerHTML = '';
             noResultsMessage.classList.add('hidden');
-            loadingText.innerText = 'Traversing vector space...';
+            loadingText.innerText = 'Analyzing Context...';
             loadingSpinner.classList.remove('hidden');
             searchButton.disabled = true;
+
+            // Smooth scroll to results
+            window.scrollTo({ top: resultsSection.offsetTop - 100, behavior: 'smooth' });
 
             try {
                 const response = await fetch('/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, limit: 12 }),
+                    body: JSON.stringify({ query, limit: 8 }),
                 });
 
                 const data = await response.json();
@@ -163,35 +204,43 @@
                 if (data.success && data.results && data.results.length > 0) {
                     data.results.forEach((result, idx) => {
                         const card = document.createElement('div');
-                        card.className = 'group relative bg-white border border-slate-200 p-8 rounded-[2rem] shadow-[0_4px_20px_rgb(0,0,0,0.02)] hover:shadow-[0_15px_40px_rgb(0,0,0,0.06)] hover:border-indigo-100 transition-all duration-300';
+                        card.className = 'group relative bg-white border border-slate-100 p-10 rounded-[2.5rem] card-shadow card-hover transition-all duration-500';
                         
-                        // RRF Score display (higher is better)
-                        const rrfScore = (result.rrf_score * 1000).toFixed(2);
+                        const score = (result.rrf_score * 100).toFixed(1);
+                        const words = result.word_count || 0;
                         
                         card.innerHTML = `
-                            <div class="flex flex-col md:flex-row justify-between items-start gap-4 mb-6">
+                            <div class="flex flex-col md:flex-row justify-between items-start gap-6 mb-8">
                                 <div class="flex-grow">
-                                    <div class="flex items-center gap-2 mb-2">
-                                        <span class="text-[10px] font-bold text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded uppercase tracking-wider">${result.file_path.split('.').pop()}</span>
-                                        <span class="text-xs font-semibold text-slate-400">${result.file_path}</span>
+                                    <div class="flex items-center gap-3 mb-4">
+                                        <span class="text-[10px] font-black text-white bg-indigo-600 px-3 py-1 rounded-full uppercase tracking-widest">${result.file_path.split('.').pop()}</span>
+                                        <span class="text-xs font-bold text-slate-400 tracking-tight truncate max-w-[200px] md:max-w-none">${result.file_path}</span>
                                     </div>
-                                    <h3 class="text-xl font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">${result.heading}</h3>
+                                    <h3 class="text-2xl font-extrabold text-slate-900 leading-tight group-hover:text-indigo-600 transition-colors">${result.heading}</h3>
                                 </div>
                                 <div class="flex flex-col items-end shrink-0">
-                                    <div class="text-2xl font-black text-indigo-500/20 group-hover:text-indigo-500/40 transition-colors leading-none">#${idx + 1}</div>
-                                    <div class="mt-2 text-[10px] font-bold px-2 py-1 rounded bg-slate-50 text-slate-500 border border-slate-100">${rrfScore} Hybrid Score</div>
+                                    <div class="text-4xl font-black text-slate-100 group-hover:text-indigo-50 transition-colors leading-none tracking-tighter">#${idx + 1}</div>
+                                    <div class="mt-4 flex items-center gap-2 bg-indigo-50/50 px-4 py-2 rounded-2xl border border-indigo-100/50">
+                                        <div class="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div>
+                                        <span class="text-xs font-black text-indigo-600 uppercase tracking-tighter">${score}% Match</span>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="bg-slate-50/50 rounded-2xl p-6 mb-6">
-                                <p class="text-slate-600 leading-relaxed text-sm md:text-base whitespace-pre-wrap">${result.content}</p>
+                            <div class="bg-slate-50/80 rounded-[2rem] p-8 mb-8 border border-slate-100/50">
+                                <p class="text-slate-600 leading-[1.8] text-base md:text-lg whitespace-pre-wrap font-medium">${result.content}</p>
                             </div>
-                            <div class="flex items-center justify-between">
-                                <button onclick="viewFullDoc('${result.file_path}')" class="text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 px-4 py-2 rounded-xl hover:bg-indigo-50 transition-all">
-                                    View Full Document
-                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                                    </svg>
+                            <div class="flex items-center justify-between pt-2">
+                                <button onclick="viewFullDoc('${result.file_path}')" class="group/btn flex items-center gap-3 text-sm font-black text-indigo-600 hover:text-indigo-700 transition-all">
+                                    <span class="bg-indigo-50 p-2 rounded-xl group-hover/btn:bg-indigo-600 group-hover/btn:text-white transition-all">
+                                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+                                    </span>
+                                    Read Full Context
                                 </button>
+                                <div class="flex items-center gap-4 text-[10px] font-black text-slate-300 uppercase tracking-widest">
+                                    <span>${words} Words</span>
+                                    <span class="w-1 h-1 rounded-full bg-slate-200"></span>
+                                    <span>ID: ${result.id}</span>
+                                </div>
                             </div>
                         `;
                         resultsContainer.appendChild(card);
@@ -201,10 +250,38 @@
                 }
             } catch (error) {
                 console.error('Search error:', error);
-                resultsContainer.innerHTML = '<div class="bg-red-50 text-red-600 p-8 rounded-3xl border border-red-100 text-center font-bold">Failed to reach the API server.</div>';
+                resultsContainer.innerHTML = `
+                    <div class="bg-red-50 text-red-600 p-12 rounded-[2.5rem] border border-red-100 text-center font-bold">
+                        <div class="text-4xl mb-4">⚠️</div>
+                        Connection Failed. Please check if the server is running.
+                    </div>
+                `;
             } finally {
                 loadingSpinner.classList.add('hidden');
                 searchButton.disabled = false;
+            }
+        }
+
+        function clearSearch() {
+            resultsSection.classList.add('hidden');
+            searchInput.value = '';
+            resultsContainer.innerHTML = '';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        async function deleteDoc(path) {
+            if (!confirm(`Permanently remove ${path.split('/').pop()} from your library?`)) return;
+            
+            try {
+                const res = await fetch(`/doc?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) {
+                    loadDocs();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('Delete failed: ' + err.message);
             }
         }
 
@@ -214,21 +291,48 @@
                 const data = await res.json();
                 if (data.success) {
                     docList.innerHTML = '';
-                    const mdFiles = data.docs.filter(f => f.endsWith('.md'));
-                    docCount.innerText = `${mdFiles.length} Documents`;
+                    docCount.innerText = `${data.docs.length} Documents Synced`;
                     
-                    mdFiles.forEach(file => {
+                    if (data.docs.length === 0) {
+                        emptyLibrary.classList.remove('hidden');
+                    } else {
+                        emptyLibrary.classList.add('hidden');
+                    }
+
+                    data.docs.forEach(doc => {
+                        const date = new Date(doc.lastModified).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
                         const item = document.createElement('div');
-                        item.className = 'bg-white border border-slate-100 p-4 rounded-2xl hover:border-indigo-200 hover:shadow-sm transition-all cursor-pointer group';
-                        item.onclick = () => viewFullDoc('docs/' + file);
+                        item.className = 'group bg-white border border-slate-100 p-8 rounded-[2rem] card-shadow hover:border-indigo-100 hover:shadow-indigo-50 transition-all duration-300 relative overflow-hidden';
                         item.innerHTML = `
-                            <div class="flex items-center gap-3">
-                                <div class="p-2 rounded-lg bg-indigo-50 text-indigo-500 group-hover:bg-indigo-500 group-hover:text-white transition-colors">
-                                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            <div class="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button onclick="deleteDoc('${doc.path}')" class="p-3 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-2xl transition-all active:scale-90">
+                                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                                     </svg>
+                                </button>
+                            </div>
+                            <div class="flex flex-col h-full">
+                                <div class="mb-6">
+                                    <div class="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all duration-500">
+                                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                    </div>
                                 </div>
-                                <span class="text-sm font-semibold text-slate-700 truncate">${file.split('/').pop()}</span>
+                                <div class="cursor-pointer flex-grow" onclick="viewFullDoc('${doc.path}')">
+                                    <h3 class="text-lg font-black text-slate-900 mb-2 group-hover:text-indigo-600 transition-colors truncate pr-8">${doc.name}</h3>
+                                    <div class="flex items-center gap-3 text-[10px] font-black text-slate-400 uppercase tracking-[0.15em]">
+                                        <span class="flex items-center gap-1">
+                                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+                                            ${(doc.size / 1024).toFixed(0)} KB
+                                        </span>
+                                        <span class="w-1 h-1 rounded-full bg-slate-200"></span>
+                                        <span class="flex items-center gap-1">
+                                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                            ${date}
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
                         `;
                         docList.appendChild(item);
@@ -239,25 +343,27 @@
             }
         }
 
-        pdfInput.addEventListener('change', async (e) => {
+        fileInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (!file) return;
 
             const formData = new FormData();
             formData.append('file', file);
 
-            loadingText.innerText = 'Converting PDF to Markdown...';
+            // Change button UI to loading state
+            loadingText.innerText = `Ingesting ${file.name.substring(0, 15)}...`;
             loadingSpinner.classList.remove('hidden');
+            resultsSection.classList.remove('hidden');
 
             try {
-                const res = await fetch('/ingest-pdf', {
+                const res = await fetch('/upload', {
                     method: 'POST',
                     body: formData
                 });
                 const data = await res.json();
                 if (data.success) {
-                    alert('PDF successfully ingested!');
                     loadDocs();
+                    resultsSection.classList.add('hidden'); // Hide results after upload
                 } else {
                     alert('Error: ' + data.error);
                 }
@@ -265,7 +371,7 @@
                 alert('Upload failed: ' + err.message);
             } finally {
                 loadingSpinner.classList.add('hidden');
-                pdfInput.value = '';
+                fileInput.value = '';
             }
         });
 
@@ -301,7 +407,10 @@
                 e.preventDefault();
                 searchInput.focus();
             }
-            if (e.key === 'Escape') closeModal();
+            if (e.key === 'Escape') {
+                if (!modal.classList.contains('hidden')) closeModal();
+                else clearSearch();
+            }
         });
 
         // Init

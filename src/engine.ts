@@ -27,7 +27,7 @@ export class VectorEngine {
       this.sql = postgres(dbUrl);
       logger.info("External Postgres connection initialized.");
     } else {
-      const dbPath = path.join(process.cwd(), ".db");
+      const dbPath = path.join(process.cwd(), "raglike_db");
       this.pglite = await PGlite.create(dbPath, { extensions: { vector } });
       logger.info({ path: dbPath }, "Local PGlite Vector Engine persistent storage initialized.");
     }
@@ -40,6 +40,8 @@ export class VectorEngine {
         heading TEXT,
         content TEXT,
         embedding vector(384),
+        last_modified TIMESTAMP,
+        word_count INTEGER,
         search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', heading || ' ' || content)) STORED
       );
     `);
@@ -49,12 +51,14 @@ export class VectorEngine {
     await this.exec("DROP INDEX IF EXISTS idx_markdown_chunks_embedding;");
     await this.exec("CREATE INDEX idx_markdown_chunks_embedding ON markdown_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);");
     
-    // Ensure search_vector column exists for hybrid search
+    // Ensure new columns exist for existing databases
     try {
+      await this.exec("ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS last_modified TIMESTAMP;");
+      await this.exec("ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS word_count INTEGER;");
       await this.exec("ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', heading || ' ' || content)) STORED;");
     } catch (e) {
       // In some older postgres versions ADD COLUMN IF NOT EXISTS with GENERATED might be finicky
-      logger.warn("Could not add search_vector column via ALTER TABLE, it might already exist or the syntax is unsupported by this version.");
+      logger.warn("Could not update schema columns, they might already exist or the syntax is unsupported by this version.");
     }
 
     // Add GIN index for full-text search (replacing GIST if it existed for better performance)
@@ -79,6 +83,11 @@ export class VectorEngine {
     } else {
       return await this.pglite!.query<T>(query, params);
     }
+  }
+
+  async removeDocument(relativePath: string) {
+    await this.query("DELETE FROM markdown_chunks WHERE file_path = $1", [relativePath]);
+    logger.info({ file: relativePath }, "Document chunks removed from database.");
   }
 
   async hasData(): Promise<boolean> {
@@ -116,72 +125,138 @@ export class VectorEngine {
 
   public async indexSingleFile(filePath: string) {
     const relativePath = path.relative(process.cwd(), filePath);
-    const rawContent = fs.readFileSync(filePath, "utf-8");
+    const stats = fs.statSync(filePath);
+    const lastModified = stats.mtime;
+    let rawContent = fs.readFileSync(filePath, "utf-8");
     
-    // Extract H1 title if present
-    const h1Match = rawContent.match(/^# (.*)$/m);
-    const h1Title = h1Match ? h1Match[1].trim() : "";
+    // Clean base64 image data from markdown to prevent bloating the vector database
+    // This handles both standard markdown ![alt](data:...) and <img> tags
+    rawContent = rawContent.replace(/!\[.*?\]\(data:image\/[^;]+;base64,[^)]*\)/g, "");
+    rawContent = rawContent.replace(/<img\s+[^>]*src="data:image\/[^;]+;base64,[^"]*"[^>]*>/g, "");
+    // Fallback for any orphaned base64 data URI strings
+    rawContent = rawContent.replace(/data:image\/[^;]+;base64,[a-zA-Z0-9+/=]+/g, "");
 
-    const sections = rawContent.split(/(?=^##+ )/m);
-    const chunksToInsert: [string, string, string, string][] = [];
+    // Clear old chunks first to ensure clean updates
+    await this.removeDocument(relativePath);
 
-    for (const section of sections) {
-      const lines = section.split("\n");
-      const heading = lines[0].startsWith("#") ? lines[0].trim() : "General";
-      const sectionContent = lines.slice(1).join("\n").trim();
+    const lines = rawContent.split("\n");
+    const breadcrumbs: string[] = [];
+    const sections: { breadcrumb: string; content: string }[] = [];
+    let currentSectionContent: string[] = [];
 
-      // Step 3: Smart Chunking with Overlap
-      // Instead of just paragraph splitting, we ensure chunks are of a reasonable size
-      // and overlap to maintain context.
+    for (const line of lines) {
+      const headerMatch = line.match(/^(#+) (.*)$/);
+      if (headerMatch) {
+        // Save previous section if it has content
+        if (currentSectionContent.length > 0) {
+          sections.push({
+            breadcrumb: breadcrumbs.join(" > "),
+            content: currentSectionContent.join("\n").trim()
+          });
+          currentSectionContent = [];
+        }
+
+        const level = headerMatch[1].length;
+        const title = headerMatch[2].trim();
+
+        // Update breadcrumbs based on level
+        while (breadcrumbs.length >= level) {
+          breadcrumbs.pop();
+        }
+        breadcrumbs.push(title);
+      } else {
+        currentSectionContent.push(line);
+      }
+    }
+
+    // Add last section
+    if (currentSectionContent.length > 0) {
+      sections.push({
+        breadcrumb: breadcrumbs.join(" > ") || "General",
+        content: currentSectionContent.join("\n").trim()
+      });
+    }
+
+    const chunksToInsert: [string, string, string, string, Date, number][] = [];
+
+    // Helper to extract first and last sentences
+    const getSentences = (text: string) => {
+      return text.match(/[^.!?]+[.!?]+/g) || [text];
+    };
+
+    for (let i = 0; i < sections.length; i++) {
+      const { breadcrumb, content } = sections[i];
+      if (!content) continue;
+
       const CHUNK_SIZE = 600;
-      const CHUNK_OVERLAP = 100;
+      const CHUNK_OVERLAP = 120; // Increased overlap for better slop coverage
       
       let startIndex = 0;
-      while (startIndex < sectionContent.length) {
+      const sectionChunks: string[] = [];
+
+      while (startIndex < content.length) {
         let endIndex = startIndex + CHUNK_SIZE;
-        let chunk = sectionContent.substring(startIndex, endIndex);
+        let chunk = content.substring(startIndex, endIndex);
         
-        // If we're not at the end, try to find a natural break (period or newline)
-        if (endIndex < sectionContent.length) {
+        if (endIndex < content.length) {
           const lastBreak = Math.max(chunk.lastIndexOf("\n"), chunk.lastIndexOf(". "));
           if (lastBreak > CHUNK_SIZE * 0.7) {
             endIndex = startIndex + lastBreak + 1;
-            chunk = sectionContent.substring(startIndex, endIndex);
+            chunk = content.substring(startIndex, endIndex);
           }
         }
 
-        const trimmedChunk = chunk.trim();
-        if (trimmedChunk.length > 50) {
-          const contextPrefix = h1Title && !heading.includes(h1Title) ? `${h1Title} > ` : "";
-          const vectorString = await this.generateEmbeddingString(`${contextPrefix}${heading}\n${trimmedChunk}`);
-          chunksToInsert.push([relativePath, heading, trimmedChunk, vectorString]);
+        if (chunk.trim().length > 5) {
+          sectionChunks.push(chunk.trim());
         }
         
         startIndex = endIndex - CHUNK_OVERLAP;
-        // Safety check to avoid infinite loop
-        if (startIndex >= sectionContent.length || chunk.length < CHUNK_OVERLAP) break;
+        if (startIndex >= content.length || chunk.length < CHUNK_OVERLAP) break;
+      }
+
+      // Apply Context Slop within section and between sections
+      for (let j = 0; j < sectionChunks.length; j++) {
+        let finalChunkContent = sectionChunks[j];
+
+        // Prepend slop from previous section if first chunk
+        if (j === 0 && i > 0) {
+          const prevSection = sections[i - 1].content;
+          const prevSentences = getSentences(prevSection);
+          const lastSentence = prevSentences[prevSentences.length - 1];
+          finalChunkContent = `[Context from ${sections[i-1].breadcrumb}]: ...${lastSentence}\n\n${finalChunkContent}`;
+        }
+
+        // Append slop from next section if last chunk
+        if (j === sectionChunks.length - 1 && i < sections.length - 1) {
+          const nextSection = sections[i + 1].content;
+          const nextSentences = getSentences(nextSection);
+          const firstSentence = nextSentences[0];
+          finalChunkContent = `${finalChunkContent}\n\n[Context continues in ${sections[i+1].breadcrumb}]: ${firstSentence}...`;
+        }
+
+        const wordCount = finalChunkContent.split(/\s+/).length;
+        const vectorString = await this.generateEmbeddingString(`${breadcrumb}\n${finalChunkContent}`);
+        chunksToInsert.push([relativePath, breadcrumb, finalChunkContent, vectorString, lastModified, wordCount]);
       }
     }
 
     // Batch insert for this file
     if (chunksToInsert.length > 0) {
       if (this.sql) {
-        // Postgres.js batch insert
         await this.sql`
-          INSERT INTO markdown_chunks (file_path, heading, content, embedding)
+          INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count)
           VALUES ${this.sql(chunksToInsert)}
         `;
       } else {
-        // PGlite doesn't have a built-in batch helper as clean as postgres.js, so we iterate
-        // but it's still better than doing it paragraph-by-paragraph in the main loop
-        for (const [path, head, cont, emb] of chunksToInsert) {
+        for (const [path, head, cont, emb, mod, word] of chunksToInsert) {
           await this.query(
-            "INSERT INTO markdown_chunks (file_path, heading, content, embedding) VALUES ($1, $2, $3, $4)",
-            [path, head, cont, emb]
+            "INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count) VALUES ($1, $2, $3, $4, $5, $6)",
+            [path, head, cont, emb, mod, word]
           );
         }
       }
     }
+    logger.info({ file: relativePath, chunks: chunksToInsert.length }, "File indexed with hierarchical context and slop.");
   }
 
   async search(queryText: string, limit: number) {
@@ -190,7 +265,7 @@ export class VectorEngine {
     // Hybrid Search: Reciprocal Rank Fusion (RRF)
     // RRF combines the rankings from different search methods to provide a more robust result set.
     // The formula is: score = sum(1 / (k + rank)) where k is a constant (usually 60).
-    const res = await this.query<{ file_path: string; heading: string; content: string; distance: number; rrf_score: number }>(`
+    const res = await this.query<{ id: string; file_path: string; heading: string; content: string; distance: number; rrf_score: number }>(`
       WITH vector_search AS (
         SELECT id, row_number() OVER (ORDER BY embedding <=> $1 ASC) as rank
         FROM markdown_chunks
@@ -203,9 +278,12 @@ export class VectorEngine {
         LIMIT $2 * 2
       )
       SELECT 
+        m.id,
         m.file_path, 
         m.heading, 
         m.content, 
+        m.last_modified,
+        m.word_count,
         COALESCE((m.embedding <=> $1), 1.0) as distance,
         (COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0))::float as rrf_score
       FROM markdown_chunks m
@@ -217,6 +295,26 @@ export class VectorEngine {
     `, [queryVectorStr, limit, queryText]);
 
     return res.rows;
+  }
+
+  async getChunkNeighbors(id: number) {
+    const chunkRes = await this.query<{ file_path: string }>("SELECT file_path FROM markdown_chunks WHERE id = $1", [id]);
+    if (chunkRes.rows.length === 0) return null;
+    const filePath = chunkRes.rows[0].file_path;
+
+    const prevRes = await this.query<{ id: string; heading: string; content: string }>(
+      "SELECT id, heading, content FROM markdown_chunks WHERE file_path = $1 AND id < $2 ORDER BY id DESC LIMIT 1",
+      [filePath, id]
+    );
+    const nextRes = await this.query<{ id: string; heading: string; content: string }>(
+      "SELECT id, heading, content FROM markdown_chunks WHERE file_path = $1 AND id > $2 ORDER BY id ASC LIMIT 1",
+      [filePath, id]
+    );
+
+    return {
+      previous: prevRes.rows[0] || null,
+      next: nextRes.rows[0] || null
+    };
   }
 
   async readDocument(relativePath: string): Promise<string | null> {

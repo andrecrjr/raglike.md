@@ -9,12 +9,17 @@ The engine dynamically selects its storage backend based on the environment:
 3. **Docker Auto-Discovery**: When running in Docker, it defaults to the `db:5432` service if no `POSTGRES_URL` is provided.
 
 ## Smart Chunking Strategy
-To provide precise context to AI models while maintaining continuity, the engine uses a **Sliding Window with Overlap** strategy:
-1. **Section Splitting**: The document is first split by headers (`##+`).
-2. **Context Persistence**: Each chunk is prepended with its structural context (e.g., `H1 Title > Section Heading`) before being embedded.
-3. **Sliding Window**: Each section is divided into chunks of ~600 characters with a 100-character overlap. This overlap ensures that semantic meaning is not lost at the boundaries of chunks.
+To provide precise context to AI models while maintaining continuity, the engine uses an advanced **Hierarchical Sliding Window with Context Slop** strategy:
+
+1. **Hierarchical Breadcrumbs**: Unlike simple title-prepending, the engine now parses the full document structure iteratively. Every chunk is prefixed with its complete breadcrumb path (e.g., `H1 > H2 > H3 > H4`). This ensures that even deeply nested content retains its full semantic context when retrieved in isolation.
+2. **Context Slop (Boundary Enrichment)**: To prevent semantic fragmentation at chunk and section boundaries, we implement "Context Slop."
+   - The **last sentence** of the previous section is prepended to the first chunk of the current section.
+   - The **first sentence** of the following section is appended to the last chunk of the current section.
+   - This "semantic glue" allows the LLM to understand what preceded and what follows a specific retrieval, improving coherence.
+3. **Sliding Window**: Each section is divided into chunks of ~600 characters with a 120-character overlap.
 4. **Natural Breaks**: The engine attempts to find natural breaks (periods or newlines) at the end of each window to keep chunks readable.
-5. **Filtering**: Chunks shorter than 50 characters are ignored to reduce noise.
+5. **Metadata Tagging**: Each chunk is indexed with its `word_count` and `last_modified` timestamp, allowing for more advanced filtering and "sort by recent" query capabilities.
+6. **Filtering**: Chunks shorter than 5 characters (previously 50) are now indexed to ensure short but critical technical data is searchable.
 
 ## Embedding Model
 We use the **Xenova/all-MiniLM-L6-v2** model.

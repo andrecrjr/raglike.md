@@ -3,6 +3,7 @@ import { logger } from "./logger";
 import * as path from "path";
 import pdf2md from "pdf2md-ts";
 import { readdir } from "node:fs/promises";
+import * as fs from "node:fs";
 
 export function startHttpServer(engine: VectorEngine) {
   Bun.serve({
@@ -20,8 +21,23 @@ export function startHttpServer(engine: VectorEngine) {
       if (req.method === "GET" && url.pathname === "/list-docs") {
         try {
           const docsDir = path.join(process.cwd(), "docs");
-          const files = await readdir(docsDir, { recursive: true });
-          const docs = files.filter(f => f.endsWith(".md") || !f.includes(".")); // Simple filter for md and folders
+          const entries = await readdir(docsDir, { recursive: true, withFileTypes: true });
+          
+          const docs = await Promise.all(entries
+            .filter(e => e.isFile() && e.name.endsWith(".md"))
+            .map(async (e) => {
+              const relativePath = path.join(path.relative(docsDir, e.parentPath), e.name).replace(/^\.\//, "");
+              const fullPath = path.join(e.parentPath, e.name);
+              const stats = fs.statSync(fullPath);
+              return {
+                name: e.name,
+                path: "docs/" + relativePath,
+                lastModified: stats.mtime,
+                size: stats.size
+              };
+            })
+          );
+          
           return Response.json({ success: true, docs });
         } catch (err: any) {
           return Response.json({ error: err.message }, { status: 500 });
@@ -41,6 +57,24 @@ export function startHttpServer(engine: VectorEngine) {
         }
       }
 
+      if (req.method === "DELETE" && url.pathname === "/doc") {
+        const filePath = url.searchParams.get("path");
+        if (!filePath) return Response.json({ error: "Missing path parameter" }, { status: 400 });
+
+        try {
+          const fullPath = path.resolve(process.cwd(), filePath);
+          if (!fullPath.startsWith(process.cwd())) throw new Error("Security violation");
+
+          if (fs.existsSync(fullPath)) {
+            fs.unlinkSync(fullPath);
+          }
+          await engine.removeDocument(filePath);
+          return Response.json({ success: true });
+        } catch (err: any) {
+          return Response.json({ error: err.message }, { status: 500 });
+        }
+      }
+
       if (req.method === "POST" && url.pathname === "/search") {
         try {
           const body = await req.json() as { query: string; limit?: number };
@@ -52,26 +86,33 @@ export function startHttpServer(engine: VectorEngine) {
         }
       }
 
-      if (req.method === "POST" && url.pathname === "/ingest-pdf") {
+      if (req.method === "POST" && url.pathname === "/upload") {
         try {
           const formData = await req.formData();
           const file = formData.get("file") as File;
           if (!file) return Response.json({ error: "No file uploaded" }, { status: 400 });
 
           const buffer = await file.arrayBuffer();
-          const markdown = await pdf2md(new Uint8Array(buffer));
+          let targetPath: string;
           
-          const filename = file.name.replace(".pdf", ".md");
-          const targetPath = path.join("docs", filename);
+          if (file.name.endsWith(".pdf")) {
+            const markdown = await pdf2md(new Uint8Array(buffer));
+            const filename = file.name.replace(".pdf", ".md");
+            targetPath = path.join("docs", filename);
+            await Bun.write(targetPath, markdown);
+          } else if (file.name.endsWith(".md")) {
+            targetPath = path.join("docs", file.name);
+            await Bun.write(targetPath, buffer);
+          } else {
+            return Response.json({ error: "Unsupported file type. Please upload .md or .pdf" }, { status: 400 });
+          }
           
-          await Bun.write(targetPath, markdown);
-          
-          // Re-index the document immediately so it's searchable in the database
+          // Re-index the document immediately (idempotent due to internal removeDocument call)
           await engine.indexSingleFile(path.resolve(process.cwd(), targetPath));
           
           return Response.json({ success: true, path: targetPath });
         } catch (err: any) {
-          logger.error(err, "PDF ingestion error");
+          logger.error(err, "File upload error");
           return Response.json({ error: err.message }, { status: 500 });
         }
       }

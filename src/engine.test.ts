@@ -35,7 +35,7 @@ describe("PGlite Vector Search Engine Core", () => {
     const matches = await engine.search(query, 1);
 
     expect(matches.length).toBe(1);
-    expect(matches[0].heading).toBe("## Deep Module");
+    expect(matches[0].heading).toBe("Deep Module");
     expect(matches[0].content).toContain("highly isolated");
   });
 
@@ -49,12 +49,47 @@ describe("PGlite Vector Search Engine Core", () => {
 
     const matches = await engine.search("first long paragraph", 5);
     
-    // With the new sliding window chunking (CHUNK_SIZE=600), these two short 
-    // paragraphs will be combined into a single chunk.
     expect(matches.length).toBeGreaterThanOrEqual(1);
     
     const contents = matches.map(m => m.content);
     expect(contents[0]).toContain("This is the first long paragraph");
     expect(contents[0]).toContain("This is the second long paragraph");
+    expect(matches[0].heading).toBe("Project Title > Section One");
+  });
+
+  test("Should retrieve chunk neighbors correctly", async () => {
+    fs.writeFileSync(
+      path.join(mockDocsDir, "neighbors.md"),
+      "# Root\n\n## Section A\nThis is part A.\n\n## Section B\nThis is part B.\n\n## Section C\nThis is part C."
+    );
+
+    await engine.indexDirectory(mockDocsDir);
+
+    const searchRes = await engine.search("Section B", 1);
+    const chunkId = parseInt(searchRes[0].id);
+    
+    const neighbors = await engine.getChunkNeighbors(chunkId);
+    
+    expect(neighbors).not.toBeNull();
+    // Section B should have both A and C as neighbors in this 3-section file
+    expect(neighbors?.previous?.content).toContain("This is part A");
+    expect(neighbors?.next?.content).toContain("This is part C");
+  });
+
+  test("Should filter out base64 image data during ingestion", async () => {
+    const base64Content = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+    fs.writeFileSync(
+      path.join(mockDocsDir, "base64.md"),
+      `# Image Test\n\n![Alt text](data:image/png;base64,${base64Content})\n\n<img src="data:image/png;base64,${base64Content}" />\n\nThis text should be indexed.`
+    );
+
+    await engine.indexDirectory(mockDocsDir);
+
+    const matches = await engine.search("Image Test", 1);
+    
+    expect(matches.length).toBe(1);
+    expect(matches[0].content).not.toContain(base64Content);
+    expect(matches[0].content).not.toContain("data:image/png;base64");
+    expect(matches[0].content).toContain("This text should be indexed.");
   });
 });

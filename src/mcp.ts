@@ -25,6 +25,17 @@ export async function startMcpServer(engine: VectorEngine) {
         }
       },
       {
+        name: "read_chunk_neighbors",
+        description: "Fetches the text immediately preceding and following a specific chunk. Use this to get more context around a search result.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            chunk_id: { type: "number", description: "The numeric ID of the chunk (obtained from search results)." }
+          },
+          required: ["chunk_id"]
+        }
+      },
+      {
         name: "get_full_document",
         description: "Retrieves the full raw markdown content of a file. Use this after finding a relevant file via semantic search.",
         inputSchema: {
@@ -44,9 +55,33 @@ export async function startMcpServer(engine: VectorEngine) {
       const limit = Number(req.params.arguments?.limit || 3);
 
       const matches = await engine.search(query, limit);
-      const output = matches.map(m => `### File: \`${m.file_path}\` > \`${m.heading}\` (Score: ${m.distance.toFixed(4)})\n---\n${m.content}\n---\n`).join("\n");
+      const output = matches.map(m => `### ID: [${m.id}] File: \`${m.file_path}\` > \`${m.heading}\` (Score: ${m.distance.toFixed(4)})\n---\n${m.content}\n---\n`).join("\n");
 
       return { content: [{ type: "text", text: output }] };
+    }
+
+    if (req.params.name === "read_chunk_neighbors") {
+      const chunkId = Number(req.params.arguments?.chunk_id);
+      const neighbors = await engine.getChunkNeighbors(chunkId);
+      
+      if (!neighbors) {
+        return { content: [{ type: "text", text: `Error: Chunk with ID ${chunkId} not found.` }], isError: true };
+      }
+
+      let text = `Neighbors for Chunk [${chunkId}]:\n\n`;
+      if (neighbors.previous) {
+        text += `PREVIOUS CHUNK [${neighbors.previous.id}] (${neighbors.previous.heading}):\n---\n${neighbors.previous.content}\n---\n\n`;
+      } else {
+        text += `PREVIOUS CHUNK: (None - Beginning of file)\n\n`;
+      }
+
+      if (neighbors.next) {
+        text += `NEXT CHUNK [${neighbors.next.id}] (${neighbors.next.heading}):\n---\n${neighbors.next.content}\n---\n`;
+      } else {
+        text += `NEXT CHUNK: (None - End of file)\n`;
+      }
+
+      return { content: [{ type: "text", text }] };
     }
 
     if (req.params.name === "get_full_document") {
