@@ -25,6 +25,7 @@ export async function startHttpServer(engine: VectorEngine) {
   const server = Bun.serve({
     port: 4321,
     hostname: process.env.HOST || "0.0.0.0",
+    idleTimeout: 0, // Disable timeout to support long-lived MCP SSE connections
     async fetch(req) {
       const url = new URL(req.url);
       

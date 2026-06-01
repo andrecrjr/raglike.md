@@ -58,6 +58,69 @@ See the **[MCP Client Setup Guide](docs/guides/mcp-client-setups.md)** for detai
 
 ---
 
+## 🔌 Default MCP Configuration
+
+### JSON (Cursor, Claude, Windsurf, Cline)
+```json
+{
+  "mcpServers": {
+    "raglike-md": {
+      "url": "http://localhost:4321/mcp"
+    }
+  }
+}
+```
+---
+
+## 📚 MCP (Tool Usage Examples)
+
+The `raglike-md` server provides a set of tools to help AI agents navigate and understand your documentation.
+
+### 1. Conceptual Research
+**Tool:** `semantic_markdown_search`
+**Goal:** Find where a specific concept is discussed without knowing exact filenames.
+**Prompt:** *"Find information about how the protocol handles SSE connections."*
+**Agent Action:**
+```json
+{
+  "name": "semantic_markdown_search",
+  "arguments": {
+    "query": "SSE connection protocol handling",
+    "limit": 3
+  }
+}
+```
+
+### 2. Context Expansion
+**Tool:** `read_chunk_neighbors`
+**Goal:** Get the sentences before and after a search result to see the full context.
+**Prompt:** *"Show me what comes after the chunk explaining the 'Context Slop' strategy."*
+**Agent Action:**
+```json
+{
+  "name": "read_chunk_neighbors",
+  "arguments": {
+    "chunk_id": 42
+  }
+}
+```
+
+### 3. Full Document Retrieval
+**Tool:** `get_full_document`
+**Goal:** Read the entire file once the relevant one has been identified.
+**Prompt:** *"Read the entire architecture overview document."*
+**Agent Action:**
+```json
+{
+  "name": "get_full_document",
+  "arguments": {
+    "file_path": "docs/architecture/overview.md"
+  }
+}
+```
+
+---
+
 ## 🌐 API Usage
 
 Start the API server:

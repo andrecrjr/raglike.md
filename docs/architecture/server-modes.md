@@ -13,6 +13,9 @@ This is the default mode, optimized for integration with AI hosts like Claude De
 - `read_chunk_neighbors`: Fetches the text immediately preceding and following a specific chunk. Useful for expanding context around a search result.
 - `get_full_document`: Retrieves the full raw markdown content of a file.
 
+> [!TIP]
+> See the **[MCP Codex](../../README.md#📚-mcp-codex-tool-usage-examples)** in the root README for concrete examples of how to use these tools.
+
 ### Usage
 ```bash
 bun start

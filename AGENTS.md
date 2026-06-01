@@ -28,6 +28,53 @@ We use **Reciprocal Rank Fusion (RRF)** to combine:
 1. **Vector Search:** Concept-based similarity using pgvector.
 2. **Full-Text Search:** Keyword-based search using Postgres `tsvector`.
 
+## 📚 MCP Codex (Tool Usage Examples)
+
+The `raglike-md` server provides a set of tools to help AI agents navigate and understand your documentation.
+
+### 1. Conceptual Research
+**Tool:** `semantic_markdown_search`
+**Goal:** Find where a specific concept is discussed without knowing exact filenames.
+**Prompt:** *"Find information about how the protocol handles SSE connections."*
+**Agent Action:**
+```json
+{
+  "name": "semantic_markdown_search",
+  "arguments": {
+    "query": "SSE connection protocol handling",
+    "limit": 3
+  }
+}
+```
+
+### 2. Context Expansion
+**Tool:** `read_chunk_neighbors`
+**Goal:** Get the sentences before and after a search result to see the full context.
+**Prompt:** *"Show me what comes after the chunk explaining the 'Context Slop' strategy."*
+**Agent Action:**
+```json
+{
+  "name": "read_chunk_neighbors",
+  "arguments": {
+    "chunk_id": 42
+  }
+}
+```
+
+### 3. Full Document Retrieval
+**Tool:** `get_full_document`
+**Goal:** Read the entire file once the relevant one has been identified.
+**Prompt:** *"Read the entire architecture overview document."*
+**Agent Action:**
+```json
+{
+  "name": "get_full_document",
+  "arguments": {
+    "file_path": "docs/architecture/overview.md"
+  }
+}
+```
+
 ## 🏛 Architecture
 - **Engine (`src/engine.ts`):** Core logic for document crawling, cleaning (stripping base64), chunking, and indexing.
 - **API (`src/api.ts`):** Bun-native HTTP server hosting REST endpoints and SSE-based MCP.

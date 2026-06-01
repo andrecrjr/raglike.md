@@ -79,7 +79,29 @@ Windsurf manages MCP servers via a global JSON file.
 
 ---
 
-## 5. Antigravity
+## 5. Codex (OpenAI Coding Agent)
+
+Codex uses a **TOML** configuration file, typically located at `~/.codex/config.toml`.
+
+**SSE Configuration (Recommended):**
+```toml
+[mcp_servers.raglike]
+enabled = true
+url = "http://localhost:4321/mcp"
+```
+
+**Stdio Configuration (Local):**
+```toml
+[mcp_servers.raglike]
+enabled = true
+command = "bun"
+args = ["run", "src/index.ts", "--mcp"]
+env = { ENABLE_MCP = "true" }
+```
+
+---
+
+## 6. Antigravity
 
 Add `raglike-md` to your `mcp_servers.json` configuration:
 
