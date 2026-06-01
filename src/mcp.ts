@@ -14,12 +14,13 @@ export function createMcpServer(engine: VectorEngine) {
     tools: [
       {
         name: "semantic_markdown_search",
-        description: "Searches through nested workspace markdown files using local pgvector embeddings.",
+        description: "Searches through nested workspace markdown files using local pgvector embeddings and hybrid RRF search. Optionally reranks results using a cross-encoder for higher accuracy.",
         inputSchema: {
           type: "object",
           properties: {
             query: { type: "string", description: "The conceptual query text string." },
-            limit: { type: "number", default: 3 }
+            limit: { type: "number", default: 3, description: "Number of results to return." },
+            rerank: { type: "boolean", default: false, description: "Whether to perform a secondary reranking pass using a cross-encoder (higher accuracy, more latency)." }
           },
           required: ["query"]
         }
@@ -53,9 +54,14 @@ export function createMcpServer(engine: VectorEngine) {
     if (req.params.name === "semantic_markdown_search") {
       const query = String(req.params.arguments?.query || "");
       const limit = Number(req.params.arguments?.limit || 3);
+      const rerank = Boolean(req.params.arguments?.rerank || false);
 
-      const matches = await engine.search(query, limit);
-      const output = matches.map(m => `### ID: [${m.id}] File: \`${m.file_path}\` > \`${m.heading}\` (Score: ${m.distance.toFixed(4)})\n---\n${m.content}\n---\n`).join("\n");
+      const matches = await engine.search(query, limit, rerank);
+      const output = matches.map(m => {
+        const scoreLabel = rerank ? "Rerank Score" : "Distance";
+        const scoreValue = rerank ? (m as any).rerank_score.toFixed(4) : m.distance.toFixed(4);
+        return `### ID: [${m.id}] File: \`${m.file_path}\` > \`${m.heading}\` (${scoreLabel}: ${scoreValue})\n---\n${m.content}\n---\n`;
+      }).join("\n");
 
       return { content: [{ type: "text", text: output }] };
     }
