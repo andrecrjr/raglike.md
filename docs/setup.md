@@ -72,7 +72,7 @@ curl -X POST http://localhost:4321/search \
 ```
 
 ### Search with Reranking (High Precision)
-To enable the Cross-Encoder reranker for more accurate results, add `"rerank": true` to your request:
+To enable the Cross-Encoder reranker for more accurate results, add `"rerank": true` to your request. **Note:** This will significantly increase the response time as it performs a secondary retrieval pass using a transformer model on the CPU.
 ```bash
 curl -X POST http://localhost:4321/search \
   -H "Content-Type: application/json" \

@@ -29,6 +29,7 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
     - For high-precision requirements, the engine can rerank the top candidates from Stage 1.
     - The Cross-Encoder processes the query and document content together to produce a high-fidelity relevance score.
     - **Usage:** Toggle via the `rerank` parameter in MCP or REST API.
+    - **Performance Note:** Reranking increases latency significantly (5x-10x) as it processes ~50 candidates through a transformer on the CPU.
 
 ### 3. Chunking Strategy
 - **Type:** Hierarchical Markdown-aware chunking.

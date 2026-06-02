@@ -9,6 +9,7 @@ A high-performance, local semantic search engine for Markdown documentation. Bui
 ## ✨ Key Features
 
 - **Hybrid Search (Vector + Full-Text):** Combines conceptual similarity (pgvector) with exact keyword matching (tsvector). Ranked using **Reciprocal Rank Fusion (RRF)** for superior precision.
+- **Cross-Encoder Reranking:** Optional second-stage reranking using `bge-reranker-base` for ultra-high precision on complex technical queries.
 - **HNSW Acceleration:** Automatically implements Hierarchical Navigable Small World indexing for sub-second searches across massive datasets.
 - **Smart Chunking:** Uses a sliding window strategy with overlap (~600 chars) to ensure AI models receive complete context without losing semantic continuity.
 - **Dual Database Architecture:** Automatically switches between local persistent **PGlite** (WASM-powered) and external **Postgres**.
@@ -76,17 +77,18 @@ See the **[MCP Client Setup Guide](docs/guides/mcp-client-setups.md)** for detai
 
 The `raglike-md` server provides a set of tools to help AI agents navigate and understand your documentation.
 
-### 1. Conceptual Research
+### 1. Conceptual Research (High Precision)
 **Tool:** `semantic_markdown_search`
-**Goal:** Find where a specific concept is discussed without knowing exact filenames.
-**Prompt:** *"Find information about how the protocol handles SSE connections."*
+**Goal:** Find precise information about a concept using the cross-encoder.
+**Prompt:** *"Find precise information about the protocol, use reranking for accuracy."*
 **Agent Action:**
 ```json
 {
   "name": "semantic_markdown_search",
   "arguments": {
     "query": "SSE connection protocol handling",
-    "limit": 3
+    "limit": 3,
+    "rerank": true
   }
 }
 ```
@@ -134,7 +136,8 @@ bun start --api
 ```json
 {
   "query": "How do I configure the protocol?",
-  "limit": 3
+  "limit": 3,
+  "rerank": true
 }
 ```
 
