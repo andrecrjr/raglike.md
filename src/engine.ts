@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite/vector";
-import { pipeline } from "@xenova/transformers";
+import { pipeline, AutoModelForSequenceClassification, AutoTokenizer } from "@huggingface/transformers";
 import postgres from "postgres";
 import { logger } from "./logger";
 import * as fs from "fs";
@@ -10,9 +10,19 @@ export class VectorEngine {
   private pglite?: PGlite;
   private sql?: postgres.Sql<{}>;
   private extractor: any;
+  private rerankerModel: any;
+  private rerankerTokenizer: any;
+  private dbPathOverride?: string;
+
+  constructor(dbPath?: string) {
+    this.dbPathOverride = dbPath;
+  }
 
   async initialize() {
     this.extractor = await pipeline("feature-extraction", "Xenova/all-mpnet-base-v2");
+    this.rerankerModel = await AutoModelForSequenceClassification.from_pretrained("Xenova/bge-reranker-base");
+    this.rerankerTokenizer = await AutoTokenizer.from_pretrained("Xenova/bge-reranker-base");
+    logger.info("Models loaded: all-mpnet-base-v2 (Embedding) & bge-reranker-base (Reranker)");
     
     let dbUrl = process.env.POSTGRES_URL;
     const isDocker = fs.existsSync("/.dockerenv");
@@ -27,7 +37,7 @@ export class VectorEngine {
       this.sql = postgres(dbUrl);
       logger.info("External Postgres connection initialized.");
     } else {
-      const dbPath = path.join(process.cwd(), "raglike_db");
+      const dbPath = this.dbPathOverride || path.join(process.cwd(), "raglike_db");
       this.pglite = await PGlite.create(dbPath, { extensions: { vector } });
       logger.info({ path: dbPath }, "Local PGlite Vector Engine persistent storage initialized.");
     }
@@ -60,22 +70,39 @@ export class VectorEngine {
         embedding vector(768),
         last_modified TIMESTAMP,
         word_count INTEGER,
-        search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', heading || ' ' || content)) STORED
+        search_vector tsvector GENERATED ALWAYS AS (
+          setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
+          setweight(to_tsvector('english', coalesce(content, '')), 'B')
+        ) STORED
       );
     `);
     
     // Step 4: Add HNSW index for high-performance vector search with tuned parameters
     // We drop and recreate to ensure parameters like m and ef_construction are applied
     await this.exec("DROP INDEX IF EXISTS idx_markdown_chunks_embedding;");
-    await this.exec("CREATE INDEX idx_markdown_chunks_embedding ON markdown_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);");
+    await this.exec("CREATE INDEX idx_markdown_chunks_embedding ON markdown_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 24, ef_construction = 100);");
     
-    // Ensure new columns exist for existing databases
+    // Ensure new columns exist for existing databases and update search_vector if needed
     try {
       await this.exec("ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS last_modified TIMESTAMP;");
       await this.exec("ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS word_count INTEGER;");
-      await this.exec("ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', heading || ' ' || content)) STORED;");
+      
+      // Check if we need to upgrade search_vector to weighted version
+      // In PostgreSQL we can't easily ALTER a GENERATED column's expression, 
+      // so we drop and recreate if it's already there to ensure the new weights apply.
+      try {
+        await this.exec("ALTER TABLE markdown_chunks DROP COLUMN IF EXISTS search_vector;");
+      } catch (e) {
+        logger.debug("search_vector column did not exist or could not be dropped.");
+      }
+      
+      await this.exec(`
+        ALTER TABLE markdown_chunks ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
+          setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
+          setweight(to_tsvector('english', coalesce(content, '')), 'B')
+        ) STORED;
+      `);
     } catch (e) {
-      // In some older postgres versions ADD COLUMN IF NOT EXISTS with GENERATED might be finicky
       logger.warn("Could not update schema columns, they might already exist or the syntax is unsupported by this version.");
     }
 
@@ -110,12 +137,15 @@ export class VectorEngine {
 
   async hasData(): Promise<boolean> {
     const res = await this.query<{ count: string }>("SELECT count(*) as count FROM markdown_chunks", []);
-    return parseInt(res.rows[0].count) > 0;
+    return res.rows[0] ? parseInt(res.rows[0].count) > 0 : false;
   }
 
   private async generateEmbeddingString(text: string): Promise<string> {
     const output = await this.extractor(text, { pooling: "mean", normalize: true });
     const array = Array.from(output.data as Float32Array);
+    if (array.length !== 768) {
+      throw new Error(`Unexpected embedding dimension: expected 768, got ${array.length}`);
+    }
     return `[${array.join(",")}]`; // Native Postgres representation
   }
 
@@ -153,6 +183,12 @@ export class VectorEngine {
     rawContent = rawContent.replace(/<img\s+[^>]*src="data:image\/[^;]+;base64,[^"]*"[^>]*>/g, "");
     // Fallback for any orphaned base64 data URI strings
     rawContent = rawContent.replace(/data:image\/[^;]+;base64,[a-zA-Z0-9+/=]+/g, "");
+    
+    // Strip raw HTML tags to prevent them from polluting embeddings and full-text search
+    rawContent = rawContent.replace(/<[^>]*>?/g, "");
+    // Clean markdown links: [text](url) -> text
+    // This reduces noise from long URLs that don't have semantic meaning for search
+    rawContent = rawContent.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
 
     // Clear old chunks first to ensure clean updates
     await this.removeDocument(relativePath);
@@ -164,7 +200,7 @@ export class VectorEngine {
 
     for (const line of lines) {
       const headerMatch = line.match(/^(#+) (.*)$/);
-      if (headerMatch) {
+      if (headerMatch && headerMatch[1] && headerMatch[2]) {
         // Save previous section if it has content
         if (currentSectionContent.length > 0) {
           sections.push({
@@ -197,59 +233,78 @@ export class VectorEngine {
 
     const chunksToInsert: [string, string, string, string, Date, number][] = [];
 
-    // Helper to extract first and last sentences
+    // Use native Intl.Segmenter for high-quality sentence boundary detection
+    const segmenter = new Intl.Segmenter("en", { granularity: "sentence" });
     const getSentences = (text: string) => {
-      return text.match(/[^.!?]+[.!?]+/g) || [text];
+      return Array.from(segmenter.segment(text)).map(s => s.segment);
     };
 
     for (let i = 0; i < sections.length; i++) {
-      const { breadcrumb, content } = sections[i];
-      if (!content) continue;
+      const section = sections[i];
+      if (!section || !section.content) continue;
+      const { breadcrumb, content } = section;
 
       const CHUNK_SIZE = 600;
-      const CHUNK_OVERLAP = 120; // Increased overlap for better slop coverage
+      const CHUNK_OVERLAP_CHARS = 120;
       
-      let startIndex = 0;
+      const sentences = getSentences(content);
       const sectionChunks: string[] = [];
+      let currentChunkSentences: string[] = [];
+      let currentChunkLength = 0;
 
-      while (startIndex < content.length) {
-        let endIndex = startIndex + CHUNK_SIZE;
-        let chunk = content.substring(startIndex, endIndex);
-        
-        if (endIndex < content.length) {
-          const lastBreak = Math.max(chunk.lastIndexOf("\n"), chunk.lastIndexOf(". "));
-          if (lastBreak > CHUNK_SIZE * 0.7) {
-            endIndex = startIndex + lastBreak + 1;
-            chunk = content.substring(startIndex, endIndex);
+      for (let sIdx = 0; sIdx < sentences.length; sIdx++) {
+        const sentence = sentences[sIdx];
+        if (!sentence) continue;
+        currentChunkSentences.push(sentence);
+        currentChunkLength += sentence.length;
+
+        if (currentChunkLength >= CHUNK_SIZE || sIdx === sentences.length - 1) {
+          sectionChunks.push(currentChunkSentences.join("").trim());
+          
+          // To implement overlap semantically, we backtrack a few sentences 
+          // until we reach approximately CHUNK_OVERLAP_CHARS
+          const lastSentences: string[] = [];
+          let overlapLength = 0;
+          for (let k = currentChunkSentences.length - 1; k >= 0; k--) {
+            const sent = currentChunkSentences[k];
+            if (!sent) continue;
+            if (overlapLength + sent.length > CHUNK_OVERLAP_CHARS && lastSentences.length > 0) break;
+            lastSentences.unshift(sent);
+            overlapLength += sent.length;
           }
+          
+          currentChunkSentences = lastSentences;
+          currentChunkLength = overlapLength;
         }
-
-        if (chunk.trim().length > 5) {
-          sectionChunks.push(chunk.trim());
-        }
-        
-        startIndex = endIndex - CHUNK_OVERLAP;
-        if (startIndex >= content.length || chunk.length < CHUNK_OVERLAP) break;
       }
 
       // Apply Context Slop within section and between sections
       for (let j = 0; j < sectionChunks.length; j++) {
         let finalChunkContent = sectionChunks[j];
+        if (!finalChunkContent) continue;
 
         // Prepend slop from previous section if first chunk
         if (j === 0 && i > 0) {
-          const prevSection = sections[i - 1].content;
-          const prevSentences = getSentences(prevSection);
-          const lastSentence = prevSentences[prevSentences.length - 1];
-          finalChunkContent = `[Context from ${sections[i-1].breadcrumb}]: ...${lastSentence}\n\n${finalChunkContent}`;
+          const prevSection = sections[i - 1];
+          if (prevSection) {
+            const prevSentences = getSentences(prevSection.content);
+            const lastSentence = prevSentences[prevSentences.length - 1];
+            if (lastSentence) {
+              finalChunkContent = `[Context from ${prevSection.breadcrumb}]: ...${lastSentence}\n\n${finalChunkContent}`;
+            }
+          }
         }
 
         // Append slop from next section if last chunk
         if (j === sectionChunks.length - 1 && i < sections.length - 1) {
-          const nextSection = sections[i + 1].content;
-          const nextSentences = getSentences(nextSection);
-          const firstSentence = nextSentences[0];
-          finalChunkContent = `${finalChunkContent}\n\n[Context continues in ${sections[i+1].breadcrumb}]: ${firstSentence}...`;
+          const nextSection = sections[i + 1];
+          if (nextSection) {
+            const nextSentences = getSentences(nextSection.content);
+            const firstSentence = nextSentences[0];
+            if (firstSentence) {
+              finalChunkContent = `${finalChunkContent}\n\n[Context continues in ${nextSection.breadcrumb}]: ${firstSentence}...`;
+            }
+          }
         }
 
         const wordCount = finalChunkContent.split(/\s+/).length;
@@ -263,7 +318,7 @@ export class VectorEngine {
       if (this.sql) {
         await this.sql`
           INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count)
-          VALUES ${this.sql(chunksToInsert)}
+          VALUES ${this.sql(chunksToInsert as any)}
         `;
       } else {
         for (const [path, head, cont, emb, mod, word] of chunksToInsert) {
@@ -277,23 +332,31 @@ export class VectorEngine {
     logger.info({ file: relativePath, chunks: chunksToInsert.length }, "File indexed with hierarchical context and slop.");
   }
 
-  async search(queryText: string, limit: number) {
+  async search(queryText: string, limit: number, rerank: boolean = false) {
     const queryVectorStr = await this.generateEmbeddingString(queryText);
     
     // Hybrid Search: Reciprocal Rank Fusion (RRF)
     // RRF combines the rankings from different search methods to provide a more robust result set.
-    // The formula is: score = sum(1 / (k + rank)) where k is a constant (usually 60).
+    // The formula is: score = sum(weight / (k + rank)) where k is a constant (usually 60).
+    // We define weights as variables for easy future tuning (currently 1:1 balance).
+    const VECTOR_WEIGHT = 1.0;
+    const TEXT_WEIGHT = 1.0;
+    const K = 60;
+
+    // If reranking, we fetch more results initially to have a better candidate pool
+    const initialLimit = rerank ? Math.max(limit * 5, 50) : limit;
+
     const res = await this.query<{ id: string; file_path: string; heading: string; content: string; distance: number; rrf_score: number }>(`
       WITH vector_search AS (
         SELECT id, row_number() OVER (ORDER BY embedding <=> $1 ASC) as rank
         FROM markdown_chunks
-        LIMIT $2 * 2
+        LIMIT $3 * 2
       ),
       text_search AS (
-        SELECT id, row_number() OVER (ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english', $3)) DESC) as rank
+        SELECT id, row_number() OVER (ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english', $2)) DESC) as rank
         FROM markdown_chunks
-        WHERE search_vector @@ websearch_to_tsquery('english', $3)
-        LIMIT $2 * 2
+        WHERE search_vector @@ websearch_to_tsquery('english', $2)
+        LIMIT $3 * 2
       )
       SELECT 
         m.id,
@@ -303,21 +366,49 @@ export class VectorEngine {
         m.last_modified,
         m.word_count,
         COALESCE((m.embedding <=> $1), 1.0) as distance,
-        (COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0))::float as rrf_score
+        (
+          COALESCE(${VECTOR_WEIGHT.toFixed(1)} / (${K}.0 + v.rank), 0.0) + 
+          COALESCE(${TEXT_WEIGHT.toFixed(1)} / (${K}.0 + t.rank), 0.0)
+        )::float as rrf_score
       FROM markdown_chunks m
       LEFT JOIN vector_search v ON m.id = v.id
       LEFT JOIN text_search t ON m.id = t.id
       WHERE v.id IS NOT NULL OR t.id IS NOT NULL
       ORDER BY rrf_score DESC
-      LIMIT $2;
-    `, [queryVectorStr, limit, queryText]);
+      LIMIT $3;
+    `, [queryVectorStr, queryText, initialLimit]);
 
-    return res.rows;
+    let results = res.rows;
+
+    if (rerank && this.rerankerModel && this.rerankerTokenizer) {
+      logger.info({ count: results.length }, "Reranking search results via cross-encoder...");
+      const passages = results.map(item => `${item.heading}\n${item.content}`);
+      const queries = new Array(passages.length).fill(queryText);
+      
+      const inputs = await this.rerankerTokenizer(queries, {
+        text_pair: passages,
+        padding: true,
+        truncation: true
+      });
+      
+      const { logits } = await this.rerankerModel(inputs);
+      
+      const reranked = results.map((item, i) => ({
+        ...item,
+        rerank_score: logits.data[i]
+      }));
+
+      results = reranked
+        .sort((a, b) => (b as any).rerank_score - (a as any).rerank_score)
+        .slice(0, limit);
+    }
+
+    return results;
   }
 
   async getChunkNeighbors(id: number) {
     const chunkRes = await this.query<{ file_path: string }>("SELECT file_path FROM markdown_chunks WHERE id = $1", [id]);
-    if (chunkRes.rows.length === 0) return null;
+    if (chunkRes.rows.length === 0 || !chunkRes.rows[0]) return null;
     const filePath = chunkRes.rows[0].file_path;
 
     const prevRes = await this.query<{ id: string; heading: string; content: string }>(

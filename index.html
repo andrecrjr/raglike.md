@@ -89,13 +89,22 @@
                                 autocomplete="off"
                             >
                         </div>
-                        <button 
-                            id="searchButton"
-                            class="hidden md:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-10 py-5 rounded-[1.4rem] font-black transition-all active:scale-95 shadow-lg shadow-indigo-100"
-                        >
-                            Find
-                            <kbd class="hidden lg:inline-flex items-center h-6 px-2 font-sans text-[10px] font-bold text-indigo-200 border border-indigo-500 rounded-lg bg-indigo-500">⏎</kbd>
-                        </button>
+                        <div class="flex items-center gap-4 pr-2">
+                            <label class="hidden lg:flex items-center gap-2 cursor-pointer select-none group/toggle">
+                                <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest group-hover/toggle:text-indigo-500 transition-colors">High Precision</span>
+                                <div class="relative">
+                                    <input type="checkbox" id="rerankToggle" class="sr-only peer">
+                                    <div class="w-10 h-6 bg-slate-100 rounded-full peer peer-checked:bg-indigo-600 transition-all after:content-[''] after:absolute after:top-1 after:left-1 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
+                                </div>
+                            </label>
+                            <button 
+                                id="searchButton"
+                                class="hidden md:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-10 py-5 rounded-[1.4rem] font-black transition-all active:scale-95 shadow-lg shadow-indigo-100"
+                            >
+                                Find
+                                <kbd class="hidden lg:inline-flex items-center h-6 px-2 font-sans text-[10px] font-bold text-indigo-200 border border-indigo-500 rounded-lg bg-indigo-500">⏎</kbd>
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div class="flex shrink-0">
@@ -167,6 +176,7 @@
     <script>
         const searchInput = document.getElementById('searchQuery');
         const searchButton = document.getElementById('searchButton');
+        const rerankToggle = document.getElementById('rerankToggle');
         const resultsContainer = document.getElementById('results');
         const resultsSection = document.getElementById('resultsSection');
         const loadingSpinner = document.getElementById('loading');
@@ -182,10 +192,11 @@
             const query = searchInput.value.trim();
             if (!query) return;
 
+            const rerank = rerankToggle.checked;
             resultsSection.classList.remove('hidden');
             resultsContainer.innerHTML = '';
             noResultsMessage.classList.add('hidden');
-            loadingText.innerText = 'Analyzing Context...';
+            loadingText.innerText = rerank ? 'Reranking with Cross-Encoder...' : 'Analyzing Context...';
             loadingSpinner.classList.remove('hidden');
             searchButton.disabled = true;
 
@@ -196,7 +207,7 @@
                 const response = await fetch('/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query, limit: 8 }),
+                    body: JSON.stringify({ query, limit: 8, rerank }),
                 });
 
                 const data = await response.json();
@@ -207,6 +218,7 @@
                         card.className = 'group relative bg-white border border-slate-100 p-10 rounded-[2.5rem] card-shadow card-hover transition-all duration-500';
                         
                         const score = (result.rrf_score * 100).toFixed(1);
+                        const rerankScore = result.rerank_score !== undefined ? result.rerank_score.toFixed(2) : null;
                         const words = result.word_count || 0;
                         
                         card.innerHTML = `
@@ -220,9 +232,17 @@
                                 </div>
                                 <div class="flex flex-col items-end shrink-0">
                                     <div class="text-4xl font-black text-slate-100 group-hover:text-indigo-50 transition-colors leading-none tracking-tighter">#${idx + 1}</div>
-                                    <div class="mt-4 flex items-center gap-2 bg-indigo-50/50 px-4 py-2 rounded-2xl border border-indigo-100/50">
-                                        <div class="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div>
-                                        <span class="text-xs font-black text-indigo-600 uppercase tracking-tighter">${score}% Match</span>
+                                    <div class="mt-4 flex flex-col items-end gap-2">
+                                        <div class="flex items-center gap-2 bg-indigo-50/50 px-4 py-2 rounded-2xl border border-indigo-100/50">
+                                            <div class="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></div>
+                                            <span class="text-xs font-black text-indigo-600 uppercase tracking-tighter">${score}% Match</span>
+                                        </div>
+                                        ${rerankScore !== null ? `
+                                            <div class="flex items-center gap-2 bg-emerald-50/50 px-4 py-2 rounded-2xl border border-emerald-100/50">
+                                                <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
+                                                <span class="text-[10px] font-black text-emerald-600 uppercase tracking-tighter">Precision: ${rerankScore}</span>
+                                            </div>
+                                        ` : ''}
                                     </div>
                                 </div>
                             </div>

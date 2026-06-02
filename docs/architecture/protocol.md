@@ -11,9 +11,9 @@ The preferred interface for AI agents.
 
 ### Tools
 - **`semantic_markdown_search`**:
-    - **Description**: Conceptual search across the workspace.
-    - **Input**: `{ "query": string, "limit": number }`
-    - **Output**: Returns a formatted list of granular paragraph chunks, including the file path and heading.
+    - **Description**: Conceptual search across the workspace using a two-stage retrieval strategy.
+    - **Input**: `{ "query": string, "limit": number, "rerank": boolean }`
+    - **Output**: Returns a formatted list of granular paragraph chunks, including the file path, heading, and relevance score (Distance or Rerank Score).
 - **`read_chunk_neighbors`**:
     - **Description**: Fetches the text immediately preceding and following a specific chunk.
     - **Input**: `{ "chunk_id": number }`
@@ -42,22 +42,24 @@ Lists all indexed documents.
 
 #### `POST /search`
 Conceptual search returning granular results.
-- **Payload**: `{ "query": string, "limit": number }`
+- **Payload**: `{ "query": string, "limit": number, "rerank": boolean }`
 - **Response**:
   ```json
   {
     "success": true,
     "results": [
       {
-        "id": number,
+        "id": "number",
         "file_path": "docs/architecture/vector-engine.md",
         "heading": "## Persistence",
         "content": "...",
-        "distance": 0.4215
+        "distance": 0.4215,
+        "rerank_score": 0.8912
       }
     ]
   }
   ```
+  *Note: `rerank_score` is only present when `rerank: true` is requested.*
 
 #### `GET /read`
 Full document retrieval.

@@ -99,8 +99,8 @@ export async function startHttpServer(engine: VectorEngine) {
 
       if (req.method === "POST" && url.pathname === "/search") {
         try {
-          const body = await req.json() as { query: string; limit?: number };
-          const results = await engine.search(body.query, body.limit || 3);
+          const body = await req.json() as { query: string; limit?: number; rerank?: boolean };
+          const results = await engine.search(body.query, body.limit || 3, body.rerank || false);
           return Response.json({ success: true, results });
         } catch (err: any) {
           logger.error(err, "HTTP Endpoint request error encountered");

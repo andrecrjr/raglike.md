@@ -2,7 +2,7 @@
 
 High-performance local semantic search engine using Bun, PGlite, and Xenova Transformers. This file serves as the primary technical guide for both human developers and AI agents.
 
-## 🛠 Tech Stack
+## Tech Stack
 - **Runtime:** [Bun](https://bun.sh) (Default underlying runtime)
 - **Containerization:** [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/) (Primary development/deployment focus)
 - **Database:** [PGlite](https://pglite.dev/) (local WASM Postgres) or external Postgres with `pgvector`.
@@ -10,44 +10,67 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
 - **API:** REST API and [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
 - **Logging:** [Pino](https://github.com/pinojs/pino).
 
-## 🧠 Engine & Search Logic
+## Engine & Search Logic
 
-### 1. Embedding Model
-- **Model:** `Xenova/all-mpnet-base-v2`
+### 1. Models
+- **Embeddings:** `Xenova/all-mpnet-base-v2` (768-dimensional).
 - **Metric:** Cosine Similarity (`vector_cosine_ops` in pgvector).
-- **Indexing:** HNSW (Hierarchical Navigable Small Worlds) is used for performance, with parameters `m = 16` and `ef_construction = 64`.
+- **Reranking:** `Xenova/bge-reranker-base` (Cross-Encoder).
 
-### 2. Chunking Strategy
+### 2. Search Strategy (Two-Stage Retrieval)
+`raglike-md` uses a sophisticated two-stage search pipeline to ensure both speed and precision:
+
+1.  **Stage 1: Hybrid Retrieval (RRF)**
+    - Combines **Vector Search** (semantic similarity) and **Full-Text Search** (keyword matching).
+    - Uses **Reciprocal Rank Fusion (RRF)** to merge results from both methods.
+    - Parameters: `k = 60`, weighted `1.0` for both vector and text.
+
+2.  **Stage 2: Cross-Encoder Reranking (Optional)**
+    - For high-precision requirements, the engine can rerank the top candidates from Stage 1.
+    - The Cross-Encoder processes the query and document content together to produce a high-fidelity relevance score.
+    - **Usage:** Toggle via the `rerank` parameter in MCP or REST API.
+    - **Performance Note:** Reranking increases latency significantly (5x-10x) as it processes ~50 candidates through a transformer on the CPU.
+
+### 3. Chunking Strategy
 - **Type:** Hierarchical Markdown-aware chunking.
 - **Size:** Sliding window of ~600 characters.
 - **Overlap:** ~120 characters to preserve cross-chunk context.
 - **Context Slop:** Chunks are enriched with "Context Slop" (breadcrumbs and sentences from adjacent chunks) to provide the LLM with immediate surroundings without fetching neighbors.
 
-### 3. Search Algorithm (Hybrid Search)
-We use **Reciprocal Rank Fusion (RRF)** to combine:
-1. **Vector Search:** Concept-based similarity using pgvector.
-2. **Full-Text Search:** Keyword-based search using Postgres `tsvector`.
-
-## 📚 MCP Codex (Tool Usage Examples)
+## MCP (Tool Usage Examples)
 
 The `raglike-md` server provides a set of tools to help AI agents navigate and understand your documentation.
 
-### 1. Conceptual Research
+### 1. Conceptual Research (with Reranking)
 **Tool:** `semantic_markdown_search`
-**Goal:** Find where a specific concept is discussed without knowing exact filenames.
-**Prompt:** *"Find information about how the protocol handles SSE connections."*
+**Goal:** Find precise information with high confidence using the cross-encoder.
+**Prompt:** *"Find precise information about the protocol, use reranking for accuracy."*
 **Agent Action:**
 ```json
 {
   "name": "semantic_markdown_search",
   "arguments": {
     "query": "SSE connection protocol handling",
-    "limit": 3
+    "limit": 3,
+    "rerank": true
   }
 }
 ```
 
-### 2. Context Expansion
+### 2. REST API Usage (CURL)
+**Endpoint:** `POST /search`
+**Payload:**
+```bash
+curl -X POST http://localhost:4321/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "how the protocol handles SSE",
+    "limit": 3,
+    "rerank": true
+  }'
+```
+
+### 3. Context Expansion
 **Tool:** `read_chunk_neighbors`
 **Goal:** Get the sentences before and after a search result to see the full context.
 **Prompt:** *"Show me what comes after the chunk explaining the 'Context Slop' strategy."*
@@ -61,7 +84,7 @@ The `raglike-md` server provides a set of tools to help AI agents navigate and u
 }
 ```
 
-### 3. Full Document Retrieval
+### 4. Full Document Retrieval
 **Tool:** `get_full_document`
 **Goal:** Read the entire file once the relevant one has been identified.
 **Prompt:** *"Read the entire architecture overview document."*
@@ -92,7 +115,7 @@ The `raglike-md` server provides a set of tools to help AI agents navigate and u
 - **Setup:** `bun install`
 - **Run:** `bun run src/index.ts --api --mcp`
 
-## 🛡 Conventions & Excellence
+## Conventions & Excellence (must use)
 
 ### 1. TypeScript Standards
 - **Strict Mode:** Always on. No `any` ever. Use `unknown` if a type is truly indeterminate and narrow it.
