@@ -2,7 +2,7 @@
 
 High-performance local semantic search engine using Bun, PGlite, and Xenova Transformers. This file serves as the primary technical guide for both human developers and AI agents.
 
-## 🛠 Tech Stack
+## Tech Stack
 - **Runtime:** [Bun](https://bun.sh) (Default underlying runtime)
 - **Containerization:** [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/) (Primary development/deployment focus)
 - **Database:** [PGlite](https://pglite.dev/) (local WASM Postgres) or external Postgres with `pgvector`.
@@ -10,7 +10,7 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
 - **API:** REST API and [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
 - **Logging:** [Pino](https://github.com/pinojs/pino).
 
-## 🧠 Engine & Search Logic
+## Engine & Search Logic
 
 ### 1. Models
 - **Embeddings:** `Xenova/all-mpnet-base-v2` (768-dimensional).
@@ -36,7 +36,7 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
 - **Overlap:** ~120 characters to preserve cross-chunk context.
 - **Context Slop:** Chunks are enriched with "Context Slop" (breadcrumbs and sentences from adjacent chunks) to provide the LLM with immediate surroundings without fetching neighbors.
 
-## 📚 MCP Codex (Tool Usage Examples)
+## MCP (Tool Usage Examples)
 
 The `raglike-md` server provides a set of tools to help AI agents navigate and understand your documentation.
 
@@ -114,7 +114,7 @@ curl -X POST http://localhost:4321/search \
 - **Setup:** `bun install`
 - **Run:** `bun run src/index.ts --api --mcp`
 
-## 🛡 Conventions & Excellence
+## Conventions & Excellence (must use)
 
 ### 1. TypeScript Standards
 - **Strict Mode:** Always on. No `any` ever. Use `unknown` if a type is truly indeterminate and narrow it.

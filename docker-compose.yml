@@ -29,6 +29,7 @@ services:
       - ./docs:/app/docs
       - ./.logs:/app/.logs
       - ./.db:/app/.db
+      - ./src:/app/src
     restart: unless-stopped
 
 volumes:
