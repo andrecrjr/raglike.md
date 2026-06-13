@@ -4,7 +4,8 @@
 	"type": "module",
 	"scripts": {
 		"test": "bun test",
-		"start": "bun run src/index.ts"
+		"start": "bun run src/index.ts",
+		"install-cli": "bun install -g ./cli"
 	},
 	"dependencies": {
 		"@electric-sql/pglite": "^0.4.6",

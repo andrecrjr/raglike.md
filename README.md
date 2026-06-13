@@ -68,6 +68,27 @@ Supported Events:
 
 ---
 
+## 💻 Terminal Sync (raglike-cli)
+
+Synchronize local folders directly from your terminal.
+
+```bash
+# Option 1: Run without installing (zero-install)
+bun x ./cli ./my-notes --server http://localhost:4321
+
+# Option 2: Install globally
+bun run install-cli
+raglike-cli ./my-notes
+```
+
+- **Delta Sync:** Only uploads new or changed files.
+- **Config Support:** Uses `.raglike` (JSON) files for persistent settings.
+- **Recursive:** Scans subdirectories for `.md` and `.pdf`.
+
+[Read the CLI Guide →](docs/guides/cli.md)
+
+---
+
 ## 📚 MCP Tools
 
 ### 1. `semantic_markdown_search`
