@@ -8,29 +8,21 @@ import {
 	test,
 } from "bun:test";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { VectorEngine } from "./engine";
+import type { VectorEngine } from "./engine";
+import { getTestEngine, truncateTables } from "./test-utils";
 
 describe("Markdown AST Chunking", () => {
 	let engine: VectorEngine;
 	const mockDocsDir = path.join(process.cwd(), "test-chunking-sandbox");
-	const testDbDir = path.join(
-		os.tmpdir(),
-		`raglike-chunking-test-${Math.random().toString(36).slice(2)}`,
-	);
 
 	beforeAll(async () => {
-		if (!fs.existsSync(testDbDir)) fs.mkdirSync(testDbDir, { recursive: true });
-		engine = new VectorEngine(testDbDir);
+		engine = getTestEngine();
 		await engine.initialize();
 	}, 60000);
 
 	afterAll(async () => {
 		await engine.destroy();
-		if (fs.existsSync(testDbDir)) {
-			fs.rmSync(testDbDir, { recursive: true, force: true });
-		}
 	}, 10000);
 
 	beforeEach(async () => {
@@ -39,13 +31,13 @@ describe("Markdown AST Chunking", () => {
 
 	afterEach(async () => {
 		if (engine) {
-			// @ts-expect-error - accessing private for testing
-			await engine.exec("DELETE FROM markdown_chunks;");
+			await truncateTables(engine);
 		}
 		if (fs.existsSync(mockDocsDir)) {
 			fs.rmSync(mockDocsDir, { recursive: true, force: true });
 		}
 	});
+
 
 	test("Should bundle code blocks with preceding paragraphs", async () => {
 		const content = `

@@ -85,7 +85,9 @@ export function createMcpServer(engine: VectorEngine) {
 			const query = String(req.params.arguments?.query || "");
 			const limit = Number(req.params.arguments?.limit || 3);
 			const rerank = Boolean(req.params.arguments?.rerank || false);
-			const repository = req.params.arguments?.repository ? String(req.params.arguments.repository) : undefined;
+			const repository = req.params.arguments?.repository
+				? String(req.params.arguments.repository)
+				: undefined;
 
 			const matches = await engine.search(query, limit, rerank, repository);
 			const output = matches
@@ -94,7 +96,9 @@ export function createMcpServer(engine: VectorEngine) {
 					const scoreValue = rerank
 						? (m.rerank_score ?? 0).toFixed(4)
 						: m.distance.toFixed(4);
-					const repoInfo = m.repository_id ? ` Repo: \`${m.repository_id}\`` : "";
+					const repoInfo = m.repository_id
+						? ` Repo: \`${m.repository_id}\``
+						: "";
 					return `### ID: [${m.id}] File: \`${m.file_path}\`${repoInfo} > \`${m.heading}\` (${scoreLabel}: ${scoreValue})\n---\n${m.content}\n---\n`;
 				})
 				.join("\n");

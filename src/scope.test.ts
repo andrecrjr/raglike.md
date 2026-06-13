@@ -1,31 +1,31 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { VectorEngine } from "./engine";
+import { describe, expect, test, beforeAll, afterAll, afterEach } from "bun:test";
+import type { VectorEngine } from "./engine";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
+import { getTestEngine, truncateTables } from "./test-utils";
 
 describe("Search Scoping", () => {
     let engine: VectorEngine;
-    const testDbDir = path.join(os.tmpdir(), `raglike-scope-test-${Math.random().toString(36).slice(2)}`);
     const mockDocsDir = path.join(process.cwd(), "test-scope-sandbox");
 
     beforeAll(async () => {
-        if (!fs.existsSync(testDbDir)) fs.mkdirSync(testDbDir, { recursive: true });
         if (!fs.existsSync(mockDocsDir)) fs.mkdirSync(mockDocsDir, { recursive: true });
         
-        engine = new VectorEngine(testDbDir);
+        engine = getTestEngine();
         await engine.initialize();
     }, 60000);
 
     afterAll(async () => {
         await engine.destroy();
-        if (fs.existsSync(testDbDir)) {
-            fs.rmSync(testDbDir, { recursive: true, force: true });
-        }
         if (fs.existsSync(mockDocsDir)) {
             fs.rmSync(mockDocsDir, { recursive: true, force: true });
         }
     });
+
+    afterEach(async () => {
+        await truncateTables(engine);
+    });
+
 
     test("Should filter results by repository_id", async () => {
         const fileA = path.join(mockDocsDir, "repoA.md");
@@ -33,9 +33,10 @@ describe("Search Scoping", () => {
         
         fs.writeFileSync(fileA, "# Repo A\nThis is content from Repo A.");
         fs.writeFileSync(fileB, "# Repo B\nThis is content from Repo B.");
-        
+
         await engine.indexSingleFile(fileA, "repo-a");
         await engine.indexSingleFile(fileB, "repo-b");
+
         
         const query = "content";
         

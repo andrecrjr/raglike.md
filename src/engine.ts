@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite/vector";
 import {
@@ -7,6 +8,7 @@ import {
 	AutoTokenizer,
 	pipeline,
 } from "@huggingface/transformers";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import type { Content, Root } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { toMarkdown } from "mdast-util-to-markdown";
@@ -16,88 +18,217 @@ import postgres from "postgres";
 import { logger } from "./logger";
 
 interface TransformerOutput {
-	data: Float32Array | number[];
+	data: Float32Array;
 }
 
-type RerankerModel = (
-	inputs: unknown,
-) => Promise<{ logits: { data: Float32Array | number[] } }>;
+type Extractor = (
+	text: string | string[],
+	options?: { pooling?: string; normalize?: boolean; dtype?: string },
+) => Promise<TransformerOutput | TransformerOutput[]>;
 
+type RerankerModel = (inputs: any) => Promise<{ logits: { data: number[] } }>;
 type RerankerTokenizer = (
 	queries: string[],
-	options: { text_pair: string[]; padding: boolean; truncation: boolean },
-) => Promise<unknown>;
-
-type Extractor = (
-	text: string,
-	options: { pooling: string; normalize: boolean },
-) => Promise<TransformerOutput>;
+	options: {
+		text_pair: string[];
+		padding: boolean;
+		truncation: boolean;
+	},
+) => Promise<any>;
 
 export interface MarkdownChunk {
 	id: string;
 	file_path: string;
 	heading: string;
 	content: string;
-	distance: number;
-	rrf_score: number;
+	distance?: number;
+	rrf_score?: number;
 	rerank_score?: number;
 	last_modified?: Date;
 	word_count?: number;
 	repository_id?: string;
 }
 
+// Global cache for models to avoid redundant loading
+const modelCache: {
+	extractor?: Extractor;
+	splitterExtractor?: Extractor;
+	rerankerModel?: RerankerModel;
+	rerankerTokenizer?: RerankerTokenizer;
+} = {};
+
+export interface EngineMocks {
+	extractor?: Extractor;
+	splitterExtractor?: Extractor;
+	rerankerModel?: RerankerModel;
+	rerankerTokenizer?: RerankerTokenizer;
+}
+
 export class VectorEngine {
 	private pglite?: PGlite;
 	private sql?: postgres.Sql<Record<string, never>>;
 	private extractor?: Extractor;
+	private splitterExtractor?: Extractor;
 	private rerankerModel?: RerankerModel;
 	private rerankerTokenizer?: RerankerTokenizer;
 	private dbPathOverride?: string;
+	private initialized = false;
+	private initializing: Promise<void> | null = null;
+	private mocks: EngineMocks = {};
 
-	constructor(dbPath?: string) {
+	constructor(dbPath?: string, mocks: EngineMocks = {}) {
 		this.dbPathOverride = dbPath;
+		this.mocks = mocks;
 	}
 
 	async initialize() {
-		this.extractor = (await pipeline(
-			"feature-extraction",
-			"Xenova/all-mpnet-base-v2",
-		)) as Extractor;
-		this.rerankerModel =
-			(await AutoModelForSequenceClassification.from_pretrained(
-				"Xenova/bge-reranker-base",
-			)) as RerankerModel;
-		this.rerankerTokenizer = (await AutoTokenizer.from_pretrained(
-			"Xenova/bge-reranker-base",
-		)) as RerankerTokenizer;
-		logger.info(
-			"Models loaded: all-mpnet-base-v2 (Embedding) & bge-reranker-base (Reranker)",
-		);
+		if (this.initialized) return;
+		if (this.initializing) return this.initializing;
 
-		let dbUrl = process.env.POSTGRES_URL;
-		const isDocker = fs.existsSync("/.dockerenv");
+		this.initializing = (async () => {
+			// Use mocks if provided, otherwise load from cache or pipeline
+			if (this.mocks.extractor) {
+				this.extractor = this.mocks.extractor;
+				logger.debug("Using mock extractor");
+			} else if (modelCache.extractor) {
+				this.extractor = modelCache.extractor;
+				logger.debug("Using cached extractor");
+			} else {
+				logger.debug("Loading extractor from pipeline...");
+				this.extractor = (await pipeline(
+					"feature-extraction",
+					"Xenova/all-mpnet-base-v2",
+				)) as Extractor;
+				modelCache.extractor = this.extractor;
+			}
 
-		if (!dbUrl && isDocker) {
-			// Default connection string for our Docker Compose stack
-			dbUrl = "postgres://user:pass@db:5432/raglike";
-			logger.info(
-				"Docker environment detected. Defaulting to containerized Postgres service.",
-			);
+			if (this.mocks.splitterExtractor) {
+				this.splitterExtractor = this.mocks.splitterExtractor;
+				logger.debug("Using mock splitterExtractor");
+			} else if (modelCache.splitterExtractor) {
+				this.splitterExtractor = modelCache.splitterExtractor;
+				logger.debug("Using cached splitterExtractor");
+			} else {
+				logger.debug("Loading splitterExtractor from pipeline...");
+				this.splitterExtractor = (await pipeline(
+					"feature-extraction",
+					"Xenova/all-MiniLM-L6-v2",
+					{ dtype: "q4" },
+				)) as Extractor;
+				modelCache.splitterExtractor = this.splitterExtractor;
+			}
+
+			if (this.mocks.rerankerModel) {
+				this.rerankerModel = this.mocks.rerankerModel;
+				logger.debug("Using mock rerankerModel");
+			} else if (modelCache.rerankerModel) {
+				this.rerankerModel = modelCache.rerankerModel;
+				logger.debug("Using cached rerankerModel");
+			} else {
+				logger.debug("Loading rerankerModel from pretrained...");
+				this.rerankerModel =
+					(await AutoModelForSequenceClassification.from_pretrained(
+						"Xenova/bge-reranker-base",
+					)) as RerankerModel;
+				modelCache.rerankerModel = this.rerankerModel;
+			}
+
+			if (this.mocks.rerankerTokenizer) {
+				this.rerankerTokenizer = this.mocks.rerankerTokenizer;
+				logger.debug("Using mock rerankerTokenizer");
+			} else if (modelCache.rerankerTokenizer) {
+				this.rerankerTokenizer = modelCache.rerankerTokenizer;
+				logger.debug("Using cached rerankerTokenizer");
+			} else {
+				logger.debug("Loading rerankerTokenizer from pretrained...");
+				this.rerankerTokenizer = (await AutoTokenizer.from_pretrained(
+					"Xenova/bge-reranker-base",
+				)) as RerankerTokenizer;
+				modelCache.rerankerTokenizer = this.rerankerTokenizer;
+			}
+
+			if (!this.mocks.extractor) {
+				logger.info(
+					"Models loaded: all-mpnet-base-v2 (Embedding) & bge-reranker-base (Reranker)",
+				);
+			}
+
+			let dbUrl = process.env.POSTGRES_URL;
+			const isDocker = fs.existsSync("/.dockerenv");
+
+			if (!dbUrl && isDocker) {
+				// Default connection string for our Docker Compose stack
+				dbUrl = "postgres://user:pass@db:5432/raglike";
+				logger.info(
+					"Docker environment detected. Defaulting to containerized Postgres service.",
+				);
+			}
+
+			if (dbUrl) {
+				this.sql = postgres(dbUrl);
+				logger.info("External Postgres connection initialized.");
+			} else {
+				const dbPath =
+					this.dbPathOverride || path.join(process.cwd(), "raglike_db");
+
+				// Patch vector extension to handle Bun's file:// URL stringification in tests
+				const patchedVector = {
+					...vector,
+					setup: async (pg: any, emscriptenOpts: any) => {
+						const result = await vector.setup(pg, emscriptenOpts);
+						if (
+							result.bundlePath instanceof URL &&
+							result.bundlePath.protocol === "file:"
+						) {
+							// Use realpathSync to resolve any potential symlink issues and ensure plain path
+							const plainPath = fs.realpathSync(fileURLToPath(result.bundlePath));
+							logger.debug({ path: plainPath }, "PGlite vector bundle resolved");
+							result.bundlePath = plainPath;
+						}
+						return result;
+					},
+				};
+
+				this.pglite = await PGlite.create(dbPath, {
+					extensions: { vector: patchedVector },
+				});
+				logger.info(
+					{ path: dbPath },
+					"Local PGlite Vector Engine persistent storage initialized.",
+				);
+			}
+
+			await this.ensureSchema();
+			this.initialized = true;
+			this.initializing = null;
+		})();
+
+		return this.initializing;
+	}
+
+	/**
+	 * Clean up resources (database connections, etc.)
+	 */
+	async destroy() {
+		if (this.pglite) {
+			await this.pglite.close();
+			this.pglite = undefined;
 		}
-
-		if (dbUrl) {
-			this.sql = postgres(dbUrl);
-			logger.info("External Postgres connection initialized.");
-		} else {
-			const dbPath =
-				this.dbPathOverride || path.join(process.cwd(), "raglike_db");
-			this.pglite = await PGlite.create(dbPath, { extensions: { vector } });
-			logger.info(
-				{ path: dbPath },
-				"Local PGlite Vector Engine persistent storage initialized.",
-			);
+		if (this.sql) {
+			await this.sql.end();
+			this.sql = undefined;
 		}
+		this.initialized = false;
+	}
 
+	/**
+	 * Support for 'using' keyword (Explicit Resource Management)
+	 */
+	async [Symbol.asyncDispose]() {
+		await this.destroy();
+	}
+
+	private async ensureSchema() {
 		await this.exec("CREATE EXTENSION IF NOT EXISTS vector;");
 
 		// Check if the table exists and if the embedding dimension matches
@@ -120,29 +251,15 @@ export class VectorEngine {
 			}
 		}
 
-		await this.exec(`
-      CREATE TABLE IF NOT EXISTS markdown_chunks (
-        id BIGSERIAL PRIMARY KEY,
-        file_path TEXT,
-        heading TEXT,
-        content TEXT,
-        embedding vector(768),
-        last_modified TIMESTAMP,
-        word_count INTEGER,
-        repository_id TEXT,
-        search_vector tsvector GENERATED ALWAYS AS (
-          setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
-          setweight(to_tsvector('english', coalesce(content, '')), 'B')
-        ) STORED
-      );
-    `);
+		await this.exec(VectorEngine.SCHEMA);
 
 		// Step 4: Add HNSW index for high-performance vector search with tuned parameters
 		// We drop and recreate to ensure parameters like m and ef_construction are applied
 		await this.exec("DROP INDEX IF EXISTS idx_markdown_chunks_embedding;");
 		await this.exec(
-			"CREATE INDEX idx_markdown_chunks_embedding ON markdown_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 24, ef_construction = 100);",
+			"CREATE INDEX idx_markdown_chunks_embedding ON markdown_chunks USING hnsw (embedding vector_ip_ops) WITH (m = 24, ef_construction = 100);",
 		);
+
 
 		// Ensure new columns exist for existing databases and update search_vector if needed
 		try {
@@ -190,350 +307,321 @@ export class VectorEngine {
 		logger.info("Database subsystem fully ready and schema verified.");
 	}
 
-	private async exec(query: string) {
-		if (this.sql) {
+	static SCHEMA = `
+    CREATE TABLE IF NOT EXISTS markdown_chunks (
+      id BIGSERIAL PRIMARY KEY,
+      file_path TEXT,
+      heading TEXT,
+      content TEXT,
+      embedding vector(768),
+      last_modified TIMESTAMP,
+      word_count INTEGER,
+      repository_id TEXT,
+      search_vector tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
+        setweight(to_tsvector('english', coalesce(content, '')), 'B')
+      ) STORED
+    );
+  `;
+
+
+	async exec(query: string): Promise<void> {
+		if (this.pglite) {
+			await this.pglite.exec(query);
+		} else if (this.sql) {
 			await this.sql.unsafe(query);
 		} else {
-			await this.pglite?.exec(query);
+			throw new Error("Engine not initialized.");
 		}
 	}
 
-	private async query<T>(
+	async query<T extends Record<string, any>>(
 		query: string,
-		params: unknown[],
+		params: any[],
 	): Promise<{ rows: T[] }> {
+		if (this.pglite) {
+			const res = await this.pglite.query<T>(query, params);
+			return { rows: res.rows };
+		}
 		if (this.sql) {
-			const results = await this.sql.unsafe(
-				query,
-				params as postgres.Parameter[],
-			);
-			return { rows: results as unknown as T[] };
+			const rows = await this.sql.unsafe<T[]>(query, params);
+			return { rows };
 		}
-		const result = await this.pglite?.query<T>(query, params);
-		return { rows: result?.rows || [] };
+		throw new Error("Engine not initialized.");
 	}
 
-	async removeDocument(relativePath: string) {
-		await this.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
-			relativePath,
-		]);
+	async indexDirectory(dirPath: string, repositoryId?: string) {
+		const files = await this.discoverFiles(dirPath);
+		for (const file of files) {
+			await this.indexSingleFile(file, repositoryId);
+		}
 		logger.info(
-			{ file: relativePath },
-			"Document chunks removed from database.",
-		);
-	}
-
-	async hasData(): Promise<boolean> {
-		const res = await this.query<{ count: string }>(
-			"SELECT count(*) as count FROM markdown_chunks",
-			[],
-		);
-		return res.rows[0] ? parseInt(res.rows[0].count, 10) > 0 : false;
-	}
-
-	private async generateEmbeddingString(text: string): Promise<string> {
-		if (!this.extractor) throw new Error("Extractor not initialized");
-		const output = await this.extractor(text, {
-			pooling: "mean",
-			normalize: true,
-		});
-		const array = Array.from(output.data as Float32Array);
-		if (array.length !== 768) {
-			throw new Error(
-				`Unexpected embedding dimension: expected 768, got ${array.length}`,
-			);
-		}
-		return `[${array.join(",")}]`; // Native Postgres representation
-	}
-
-	private getFilesRecursively(dir: string): string[] {
-		const entries = fs.readdirSync(dir, { withFileTypes: true });
-		const files = entries.map((entry) => {
-			const res = path.resolve(dir, entry.name);
-			return entry.isDirectory() ? this.getFilesRecursively(res) : res;
-		});
-		return files.flat().filter((f) => f.endsWith(".md") || f.endsWith(".pdf"));
-	}
-
-	async indexDirectory(rootDocsDir: string) {
-		if (!fs.existsSync(rootDocsDir)) return;
-		const targetFiles = this.getFilesRecursively(rootDocsDir);
-
-		const CONCURRENCY_LIMIT = 5; // Process 5 files at a time to manage CPU/Memory
-		for (let i = 0; i < targetFiles.length; i += CONCURRENCY_LIMIT) {
-			const batch = targetFiles.slice(i, i + CONCURRENCY_LIMIT);
-			await Promise.all(batch.map((file) => this.indexSingleFile(file)));
-		}
-
-		logger.info(
-			{ totalFiles: targetFiles.length },
+			{ totalFiles: files.length },
 			"Recursive workspace folder ingestion complete.",
 		);
 	}
 
-	public async indexSingleFile(filePath: string, repositoryId?: string) {
+	private async discoverFiles(dirPath: string): Promise<string[]> {
+		const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+		const files: string[] = [];
+
+		for (const entry of entries) {
+			const res = path.resolve(dirPath, entry.name);
+			if (entry.isDirectory()) {
+				if (entry.name.startsWith(".") || entry.name === "node_modules")
+					continue;
+				files.push(...(await this.discoverFiles(res)));
+			} else if (entry.name.endsWith(".md") || entry.name.endsWith(".pdf")) {
+				files.push(res);
+			}
+		}
+		return files;
+	}
+
+	async indexSingleFile(filePath: string, repositoryId?: string) {
+		let content = "";
+		if (filePath.endsWith(".pdf")) {
+			const pdfBuffer = fs.readFileSync(filePath);
+			const pdfData = await pdf2md(pdfBuffer);
+			content = pdfData;
+		} else {
+			content = fs.readFileSync(filePath, "utf-8");
+		}
+
+		// Clean data: strip base64 images and large blobs to save embedding tokens and DB space
+		const cleanedContent = content.replace(
+			/data:image\/[a-zA-Z]*;base64,[^)\s]*/g,
+			"[base64 image removed]",
+		);
+
 		const relativePath = path.relative(process.cwd(), filePath);
 		const stats = fs.statSync(filePath);
-		const lastModified = stats.mtime;
-		let rawContent: string;
 
-		if (filePath.endsWith(".pdf")) {
-			const buffer = fs.readFileSync(filePath);
-			const pages = await pdf2md(new Uint8Array(buffer));
-			rawContent = pages.join("\n\n");
-		} else {
-			rawContent = fs.readFileSync(filePath, "utf-8");
+		// Remove old chunks for this file
+		await this.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
+			relativePath,
+		]);
+		logger.info({ file: relativePath }, "Document chunks removed from database.");
+
+		// Step 1: Structural AST Split
+		const sections = this.structuralSplit(cleanedContent);
+
+		const allChunksToEmbed: { heading: string; text: string }[] = [];
+
+		for (const section of sections) {
+			// Step 2: Semantic Sub-Split within each section
+			const subChunks = await this.semanticSubSplit(section.content);
+			for (const chunkText of subChunks) {
+				allChunksToEmbed.push({
+					heading: section.breadcrumbs.join(" > "),
+					text: chunkText,
+				});
+			}
 		}
 
-		// Clean base64 image data from markdown to prevent bloating the vector database
-		rawContent = rawContent.replace(
-			/!\[.*?\]\(data:image\/[^;]+;base64,[^)]*\)/g,
-			"",
+		// Step 3: Batch process embeddings
+		if (allChunksToEmbed.length > 0) {
+			const textsToEmbed = allChunksToEmbed.map(
+				(c) => `${c.heading}\n${c.text}`,
+			);
+			const embeddings = await this.getEmbeddingsBatch(textsToEmbed);
+
+			for (let i = 0; i < allChunksToEmbed.length; i++) {
+				const chunk = allChunksToEmbed[i];
+				const embedding = embeddings[i];
+				const embeddingStr = `[${embedding.join(",")}]`;
+
+				await this.query(
+					`INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count, repository_id) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+					[
+						relativePath,
+						chunk.heading,
+						chunk.text,
+						embeddingStr,
+						stats.mtime,
+						chunk.text.split(/\s+/).length,
+						repositoryId || null,
+					],
+				);
+			}
+		}
+
+		logger.info(
+			{ file: relativePath, chunks: allChunksToEmbed.length },
+			"File indexed successfully with batch processing.",
 		);
-		rawContent = rawContent.replace(
-			/<img\s+[^>]*src="data:image\/[^;]+;base64,[^"]*"[^>]*>/g,
-			"",
-		);
-		rawContent = rawContent.replace(
-			/data:image\/[^;]+;base64,[a-zA-Z0-9+/=]+/g,
-			"",
-		);
+	}
 
-		// Clear old chunks first to ensure clean updates
-		await this.removeDocument(relativePath);
+	private async getEmbeddingsBatch(texts: string[]): Promise<number[][]> {
+		if (!this.extractor) throw new Error("Extractor not initialized.");
 
-		const tree = fromMarkdown(rawContent);
-		const chunksToInsert: [
-			string,
-			string,
-			string,
-			string,
-			Date,
-			number,
-			string | null,
-		][] = [];
-		const breadcrumbs: string[] = [];
-		const chunksRaw: { heading: string; content: string }[] = [];
+		// Handle empty case
+		if (texts.length === 0) return [];
 
-		let currentChunkNodes: Content[] = [];
-		let currentChunkTextLength = 0;
-		const CHUNK_SIZE_LIMIT = 1200; // Increased limit for AST-based chunks to keep structural integrity
+		const output = await this.extractor(texts, {
+			pooling: "mean",
+			normalize: true,
+		});
 
-		const emitChunk = (nodes: Content[], breadcrumbs: string[]) => {
-			if (nodes.length === 0) return;
+		// Transformers pipeline returns a single Tensor for batch processing
+		// We need to slice it back into individual vectors
+		const data = (output as TransformerOutput).data;
+		const dimension = 768;
+		const results: number[][] = [];
 
-			// Convert nodes back to markdown
-			const content = toMarkdown({
-				type: "root",
-				children: nodes,
-			} as Root).trim();
-			if (!content) return;
+		for (let i = 0; i < texts.length; i++) {
+			const start = i * dimension;
+			const end = start + dimension;
+			results.push(Array.from(data.slice(start, end)));
+		}
 
-			const heading = breadcrumbs.join(" > ") || "General";
-			chunksRaw.push({ heading, content });
+		return results;
+	}
+
+
+
+
+	private structuralSplit(
+		content: string,
+	): { breadcrumbs: string[]; content: string }[] {
+		const tree = fromMarkdown(content);
+		const sections: { breadcrumbs: string[]; content: string }[] = [];
+		let currentBreadcrumbs: string[] = [];
+
+		const processNodes = (nodes: Content[], breadcrumbs: string[]) => {
+			let currentSectionContent: Content[] = [];
+
+			for (const node of nodes) {
+				if (node.type === "heading") {
+					// Flush current content to previous section
+					if (currentSectionContent.length > 0) {
+						sections.push({
+							breadcrumbs: [...breadcrumbs],
+							content: toMarkdown({
+								type: "root",
+								children: currentSectionContent,
+							}),
+						});
+						currentSectionContent = [];
+					}
+					// Update breadcrumbs based on heading level
+					const level = node.depth;
+					const headingText = mdastToString(node);
+					breadcrumbs = breadcrumbs.slice(0, level - 1);
+					breadcrumbs[level - 1] = headingText;
+				} else {
+					currentSectionContent.push(node);
+				}
+			}
+
+			// Final flush
+			if (currentSectionContent.length > 0) {
+				sections.push({
+					breadcrumbs: [...breadcrumbs],
+					content: toMarkdown({
+						type: "root",
+						children: currentSectionContent,
+					}),
+				});
+			}
 		};
 
-		for (let i = 0; i < tree.children.length; i++) {
-			const node = tree.children[i];
+		processNodes(tree.children, []);
+		return sections;
+	}
 
-			if (node.type === "heading") {
-				// Header is a natural boundary
-				if (currentChunkNodes.length > 0) {
-					emitChunk(currentChunkNodes, breadcrumbs);
-					currentChunkNodes = [];
-					currentChunkTextLength = 0;
-				}
+	private async semanticSubSplit(text: string): Promise<string[]> {
+		if (!this.splitterExtractor) return [text];
 
-				const level = node.depth;
-				const title = mdastToString(node).trim();
+		// Split by blocks (double newlines) to preserve Markdown structure
+		const blocks = text
+			.split(/\n\n+/)
+			.map((b) => b.trim())
+			.filter((b) => b.length > 0);
+		if (blocks.length <= 1) return [text];
 
-				// Update breadcrumbs based on level
-				while (breadcrumbs.length >= level) {
-					breadcrumbs.pop();
-				}
-				breadcrumbs.push(title);
+		// Batch embedding for all blocks
+		const blockOutputs = (await this.splitterExtractor(blocks, {
+			pooling: "mean",
+			normalize: true,
+		})) as TransformerOutput[];
 
-				// Optional: should the header itself be part of the next chunk?
-				// For structural search, yes, it helps context.
-				currentChunkNodes.push(node);
-				currentChunkTextLength += title.length;
-				continue;
+		const vectors = blockOutputs.map((out) => out.data);
+		const chunks: string[] = [];
+		let currentChunkBlocks: string[] = [blocks[0]];
+
+		for (let i = 0; i < vectors.length - 1; i++) {
+			const similarity = this.cosineSimilarity(vectors[i], vectors[i + 1]);
+
+			// Threshold for topic shift (tuned for all-MiniLM-L6-v2)
+			if (similarity < 0.45) {
+				chunks.push(currentChunkBlocks.join("\n\n"));
+				currentChunkBlocks = [blocks[i + 1]];
+			} else {
+				currentChunkBlocks.push(blocks[i + 1]);
 			}
+		}
+		chunks.push(currentChunkBlocks.join("\n\n"));
 
-			const nodeText = mdastToString(node);
-
-			// Code Block Bundling Logic
-			if (node.type === "code") {
-				// If adding this code block would make the chunk too large,
-				// and we already have a preceding paragraph, we might still want to keep them together
-				// unless it's truly massive.
-				if (
-					currentChunkTextLength > 0 &&
-					currentChunkTextLength + nodeText.length > CHUNK_SIZE_LIMIT
-				) {
-					// Only emit if the current chunk isn't just a short contextual paragraph
-					// If the last node was a paragraph and it's short, keep it for context.
-					const lastNode = currentChunkNodes[currentChunkNodes.length - 1];
-					if (
-						lastNode &&
-						lastNode.type === "paragraph" &&
-						mdastToString(lastNode).length < 200
-					) {
-						// Keep it together, don't emit yet.
-					} else {
-						emitChunk(currentChunkNodes, breadcrumbs);
-						currentChunkNodes = [];
-						currentChunkTextLength = 0;
-					}
-				}
-			}
-
-			currentChunkNodes.push(node);
-			currentChunkTextLength += nodeText.length;
-
-			// If we reached the limit, emit and start new
-			if (currentChunkTextLength >= CHUNK_SIZE_LIMIT) {
-				// Check if the next node is a code block. If so, don't emit yet,
-				// so we can bundle them in the next iteration's code logic.
-				const nextNode = tree.children[i + 1];
-				if (nextNode && nextNode.type === "code") {
-					// Delay emission to bundle with code block
-				} else {
-					emitChunk(currentChunkNodes, breadcrumbs);
-					currentChunkNodes = [];
-					currentChunkTextLength = 0;
-				}
+		// Post-process: ensure no chunk is TOO large (fallback to recursive)
+		const finalChunks: string[] = [];
+		for (const chunk of chunks) {
+			if (chunk.length > 1500) {
+				const recursiveSplitter = new RecursiveCharacterTextSplitter({
+					chunkSize: 600,
+					chunkOverlap: 120,
+				});
+				const subParts = await recursiveSplitter.splitText(chunk);
+				finalChunks.push(...subParts);
+			} else {
+				finalChunks.push(chunk);
 			}
 		}
 
-		// Final chunk
-		if (currentChunkNodes.length > 0) {
-			emitChunk(currentChunkNodes, breadcrumbs);
+		return finalChunks;
+	}
+
+	private cosineSimilarity(v1: Float32Array, v2: Float32Array): number {
+		let dot = 0;
+		for (let i = 0; i < v1.length; i++) {
+			dot += v1[i] * v2[i];
 		}
+		return dot; // Assumes normalized vectors
+	}
 
-		const segmenter = new Intl.Segmenter("en", { granularity: "sentence" });
-		const getSentences = (text: string) => {
-			return Array.from(segmenter.segment(text)).map((s) => s.segment);
-		};
-
-		// Apply Context Slop and generate embeddings
-		for (let i = 0; i < chunksRaw.length; i++) {
-			const chunk = chunksRaw[i];
-			let finalContent = chunk.content;
-
-			// Prepend slop from previous chunk
-			if (i > 0) {
-				const prev = chunksRaw[i - 1];
-				const prevSents = getSentences(prev.content);
-				const lastSent = prevSents[prevSents.length - 1];
-				if (lastSent) {
-					finalContent = `[Context from ${prev.heading}]: ...${lastSent.trim()}\n\n${finalContent}`;
-				}
-			}
-
-			// Append slop from next chunk
-			if (i < chunksRaw.length - 1) {
-				const next = chunksRaw[i + 1];
-				const nextSents = getSentences(next.content);
-				const firstSent = nextSents[0];
-				if (firstSent) {
-					finalContent = `${finalContent}\n\n[Context continues in ${next.heading}]: ${firstSent.trim()}...`;
-				}
-			}
-
-			const wordCount = finalContent.split(/\s+/).length;
-			const embeddingContent = `${chunk.heading}\n${finalContent}`;
-			const vectorString = await this.generateEmbeddingString(embeddingContent);
-
-			chunksToInsert.push([
-				relativePath,
-				chunk.heading,
-				finalContent,
-				vectorString,
-				lastModified,
-				wordCount,
-				repositoryId || null,
-			]);
-		}
-
-		logger.debug(
-			{ file: relativePath, chunkCount: chunksToInsert.length },
-			"Attempting to insert chunks into database",
-		);
-
-		// Batch insert for this file
-		if (chunksToInsert.length > 0) {
-			try {
-				if (this.sql) {
-					await this.sql`
-          INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count, repository_id)
-          VALUES ${this.sql(chunksToInsert as unknown as postgres.Parameter[][])}
-        `;
-				} else {
-					for (const [
-						path,
-						head,
-						cont,
-						emb,
-						mod,
-						word,
-						repo,
-					] of chunksToInsert) {
-						await this.query(
-							"INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count, repository_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-							[path, head, cont, emb, mod, word, repo],
-						);
-					}
-				}
-				logger.info(
-					{ file: relativePath, chunks: chunksToInsert.length },
-					"File indexed successfully.",
-				);
-			} catch (err) {
-				logger.error(
-					{ err, file: relativePath },
-					"Failed to insert chunks into database",
-				);
-				throw err;
-			}
-		} else {
-			logger.warn({ file: relativePath }, "No chunks generated for file");
-		}
+	private async getEmbedding(text: string): Promise<number[]> {
+		if (!this.extractor) throw new Error("Extractor not initialized.");
+		const output = (await this.extractor(text, {
+			pooling: "mean",
+			normalize: true,
+		})) as TransformerOutput;
+		return Array.from(output.data);
 	}
 
 	async search(
-		queryText: string,
-		limit: number,
-		rerank: boolean = false,
+		query: string,
+		limit = 5,
+		rerank = false,
 		repositoryId?: string,
-	) {
-		const queryVectorStr = await this.generateEmbeddingString(queryText);
+	): Promise<MarkdownChunk[]> {
+		const queryVector = await this.getEmbedding(query);
+		const queryVectorStr = `[${queryVector.join(",")}]`;
+		const queryText = query.trim();
 
-		// Hybrid Search: Reciprocal Rank Fusion (RRF)
-		// RRF combines the rankings from different search methods to provide a more robust result set.
-		// The formula is: score = sum(weight / (k + rank)) where k is a constant (usually 60).
-		// We define weights as variables for easy future tuning (currently 1:1 balance).
 		const VECTOR_WEIGHT = 1.0;
 		const TEXT_WEIGHT = 1.0;
 		const K = 60;
-
-		// If reranking, we fetch more results initially to have a better candidate pool
-		const initialLimit = rerank ? Math.max(limit * 5, 50) : limit;
+		const initialLimit = rerank ? Math.max(50, limit * 2) : limit;
 
 		const repoFilter = repositoryId ? "AND repository_id = $4" : "";
 
-		const res = await this.query<{
-			id: string;
-			file_path: string;
-			heading: string;
-			content: string;
-			distance: number;
-			rrf_score: number;
-			repository_id: string;
-		}>(
+		const res = await this.query<
+			MarkdownChunk & { distance: number; rrf_score: number }
+		>(
 			`
       WITH vector_search AS (
-        SELECT id, row_number() OVER (ORDER BY embedding <=> $1 ASC) as rank
+        SELECT id, row_number() OVER (ORDER BY embedding <#> $1 ASC) as rank
         FROM markdown_chunks
         WHERE 1=1 ${repoFilter}
         LIMIT $3 * 2
@@ -552,7 +640,7 @@ export class VectorEngine {
         m.last_modified,
         m.word_count,
         m.repository_id,
-        COALESCE((m.embedding <=> $1), 1.0) as distance,
+        COALESCE((m.embedding <#> $1) * -1, 0.0) as distance,
         (
           COALESCE(${VECTOR_WEIGHT.toFixed(1)} / (${K}.0 + v.rank), 0.0) + 
           COALESCE(${TEXT_WEIGHT.toFixed(1)} / (${K}.0 + t.rank), 0.0)
@@ -602,6 +690,11 @@ export class VectorEngine {
 		return results;
 	}
 
+	async hasData(): Promise<boolean> {
+		const res = await this.query("SELECT id FROM markdown_chunks LIMIT 1", []);
+		return res.rows.length > 0;
+	}
+
 	async getChunkNeighbors(id: number) {
 		const chunkRes = await this.query<{ file_path: string }>(
 			"SELECT file_path FROM markdown_chunks WHERE id = $1",
@@ -618,6 +711,7 @@ export class VectorEngine {
 			"SELECT id, heading, content FROM markdown_chunks WHERE file_path = $1 AND id < $2 ORDER BY id DESC LIMIT 1",
 			[filePath, id],
 		);
+
 		const nextRes = await this.query<{
 			id: string;
 			heading: string;
@@ -633,27 +727,17 @@ export class VectorEngine {
 		};
 	}
 
-	async readDocument(relativePath: string): Promise<string | null> {
-		const fullPath = path.resolve(process.cwd(), relativePath);
-		if (!fullPath.startsWith(process.cwd())) {
-			throw new Error(
-				"Security violation: Attempted path traversal outside workspace.",
-			);
-		}
-
-		if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-			if (fullPath.endsWith(".pdf")) {
-				const buffer = fs.readFileSync(fullPath);
-				const pages = await pdf2md(new Uint8Array(buffer));
-				return pages.join("\n\n");
-			}
-			return fs.readFileSync(fullPath, "utf-8");
-		}
-		return null;
-	}
-
 	async destroy() {
-		if (this.pglite) await this.pglite.close();
-		if (this.sql) await this.sql.end();
+		this.initialized = false;
+		if (this.pglite) {
+			const db = this.pglite;
+			this.pglite = undefined;
+			await db.close();
+		}
+		if (this.sql) {
+			const sql = this.sql;
+			this.sql = undefined;
+			await sql.end();
+		}
 	}
 }
