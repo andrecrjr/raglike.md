@@ -204,12 +204,14 @@ export async function startHttpServer(engine: VectorEngine) {
 						repository?: string;
 						hybrid?: boolean;
 					};
+					const hybrid =
+						body.hybrid !== undefined ? Boolean(body.hybrid) : true;
 					const results = await engine.search(
 						body.query,
 						body.limit || 3,
 						body.rerank || false,
 						body.repository,
-						body.hybrid || false,
+						hybrid,
 					);
 					return Response.json({ success: true, results });
 				} catch (err) {

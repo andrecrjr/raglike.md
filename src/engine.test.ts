@@ -169,15 +169,32 @@ describe("PGlite Vector Search Engine Core", () => {
 
 		await engine.indexDirectory(mockDocsDir);
 
-		// Vector-only search (default) should find the semantic match for physics concepts
+		// Vector-only search (explicitly false) should find the semantic match for physics concepts
 		const matches = await engine.search(
 			"subatomic particles and entanglement",
 			1,
+			false,
+			undefined,
+			false,
 		);
 		expect(matches.length).toBe(1);
 		expect(matches[0].heading).toBe("Quantum Mechanics");
 		expect(matches[0].distance).toBeGreaterThan(0.0);
 		expect(matches[0].rrf_score).toBe(matches[0].distance); // In vector-only mode, rrf_score maps to distance
+	}, 30000);
+
+	test("Should perform pure vector search by default", async () => {
+		// This test now verifies the NEW default behavior (hybrid=true)
+		fs.writeFileSync(
+			path.join(mockDocsDir, "hybrid_default.md"),
+			"# Quantum Mechanics\nPhysics and entanglement.",
+		);
+		await engine.indexDirectory(mockDocsDir);
+
+		const matches = await engine.search("entanglement", 1);
+		expect(matches.length).toBe(1);
+		// With hybrid=true, rrf_score will be different from distance
+		expect(matches[0].rrf_score).not.toBe(matches[0].distance);
 	}, 30000);
 
 	test("Should apply cross-encoder reranking and return rerank_score", async () => {

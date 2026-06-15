@@ -43,9 +43,9 @@ export function createMcpServer(engine: VectorEngine) {
 						},
 						hybrid: {
 							type: "boolean",
-							default: false,
+							default: true,
 							description:
-								"Whether to perform hybrid search using Reciprocal Rank Fusion (RRF) combining vector and keyword searches (default: false).",
+								"Whether to perform hybrid search using Reciprocal Rank Fusion (RRF) combining vector and keyword searches (default: true).",
 						},
 					},
 					required: ["query"],
@@ -99,7 +99,10 @@ export function createMcpServer(engine: VectorEngine) {
 				const repository = req.params.arguments?.repository
 					? String(req.params.arguments.repository)
 					: undefined;
-				const hybrid = Boolean(req.params.arguments?.hybrid || false);
+				const hybrid =
+					req.params.arguments?.hybrid !== undefined
+						? Boolean(req.params.arguments.hybrid)
+						: true;
 
 				const matches = await engine.search(
 					query,

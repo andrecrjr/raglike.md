@@ -49,6 +49,7 @@ export interface MarkdownChunk {
 	last_modified?: Date;
 	word_count?: number;
 	repository_id?: string;
+	is_code?: boolean;
 }
 
 // Global cache for models to avoid redundant loading
@@ -155,16 +156,8 @@ export class VectorEngine {
 				);
 			}
 
-			let dbUrl = process.env.POSTGRES_URL;
-			const isDocker = fs.existsSync("/.dockerenv");
-
-			if (!dbUrl && isDocker) {
-				// Default connection string for our Docker Compose stack
-				dbUrl = "postgres://user:pass@db:5432/raglike";
-				logger.info(
-					"Docker environment detected. Defaulting to containerized Postgres service.",
-				);
-			}
+			const dbUrl = process.env.POSTGRES_URL;
+			const _isDocker = fs.existsSync("/.dockerenv");
 
 			if (dbUrl) {
 				this.sql = postgres(dbUrl);
@@ -289,6 +282,9 @@ export class VectorEngine {
 			await this.exec(
 				"ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS repository_id TEXT;",
 			);
+			await this.exec(
+				"ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS is_code BOOLEAN DEFAULT FALSE;",
+			);
 
 			// Check if we need to upgrade search_vector to weighted version
 			// In PostgreSQL we can't easily ALTER a GENERATED column's expression,
@@ -350,6 +346,7 @@ export class VectorEngine {
       last_modified TIMESTAMP,
       word_count INTEGER,
       repository_id TEXT,
+      is_code BOOLEAN DEFAULT FALSE,
       search_vector tsvector GENERATED ALWAYS AS (
         setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
         setweight(to_tsvector('english', coalesce(content, '')), 'B')
@@ -487,9 +484,34 @@ export class VectorEngine {
 
 		const allChunksToEmbed: { heading: string; text: string }[] = [];
 
-		for (const section of sections) {
+		for (let i = 0; i < sections.length; i++) {
+			const section = sections[i];
+			const prevSection = i > 0 ? sections[i - 1] : null;
+			const nextSection = i < sections.length - 1 ? sections[i + 1] : null;
+
 			// Step 2: Semantic Sub-Split within each section
 			const subChunks = await this.semanticSubSplit(section.content);
+
+			// Step 3: Implement Context Slop (Boundary Enrichment)
+			if (subChunks.length > 0) {
+				// Prepend last sentence of previous section to first chunk
+				if (prevSection) {
+					const lastSentence = this.getLastSentence(prevSection.content);
+					if (lastSentence && lastSentence.length > 5) {
+						subChunks[0] = `...${lastSentence}\n\n${subChunks[0]}`;
+					}
+				}
+				// Append first sentence of following section to last chunk
+				if (nextSection) {
+					const firstSentence = this.getFirstSentence(nextSection.content);
+					if (firstSentence && firstSentence.length > 5) {
+						subChunks[subChunks.length - 1] = `${
+							subChunks[subChunks.length - 1]
+						}\n\n${firstSentence}...`;
+					}
+				}
+			}
+
 			for (const chunkText of subChunks) {
 				const trimmed = chunkText.trim();
 				if (trimmed.length < 20) continue; // Skip very short noise chunks
@@ -501,7 +523,7 @@ export class VectorEngine {
 			}
 		}
 
-		// Step 3: Batch process embeddings
+		// Step 4: Batch process embeddings
 		if (allChunksToEmbed.length > 0) {
 			const textsToEmbed = allChunksToEmbed.map(
 				(c) => `${c.heading}\n${c.text}`,
@@ -512,10 +534,17 @@ export class VectorEngine {
 				const chunk = allChunksToEmbed[i];
 				const embedding = embeddings[i];
 				const embeddingStr = `[${embedding.join(",")}]`;
+				const hasCode = chunk.text.includes("```");
+				if (hasCode) {
+					logger.debug(
+						{ file: relativePath, heading: chunk.heading },
+						"Detected code block in chunk",
+					);
+				}
 
 				await this.query(
-					`INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count, repository_id) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+					`INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count, repository_id, is_code) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 					[
 						relativePath,
 						chunk.heading,
@@ -524,6 +553,7 @@ export class VectorEngine {
 						stats.mtime,
 						chunk.text.split(/\s+/).length,
 						repositoryId || null,
+						hasCode,
 					],
 				);
 			}
@@ -535,6 +565,19 @@ export class VectorEngine {
 		);
 
 		return relativePath;
+	}
+
+	private getFirstSentence(text: string): string {
+		const cleaned = text.replace(/#+\s+.*?\n/g, "").trim(); // Remove headings
+		const match = cleaned.match(/^.*?[.!?](?:\s+|$)/s);
+		return match ? match[0].trim() : cleaned.slice(0, 100);
+	}
+
+	private getLastSentence(text: string): string {
+		const cleaned = text.trim();
+		// Find the last sentence (text ending with a sentence terminator)
+		const match = cleaned.match(/(?:^|[\n.!?])\s*([^.!?\n]+[.!?])\s*$/s);
+		return match ? match[1].trim() : cleaned.slice(-100);
 	}
 
 	async getPublicEmbeddings(texts: string[]): Promise<number[][]> {
@@ -711,8 +754,10 @@ export class VectorEngine {
 		for (let i = 0; i < vectors.length - 1; i++) {
 			const similarity = this.cosineSimilarity(vectors[i], vectors[i + 1]);
 
-			// Threshold for topic shift (tuned for all-MiniLM-L6-v2)
-			if (similarity < 0.45) {
+			// Lower threshold (0.35) and ensure we don't split chunks that are too small (< 200 chars)
+			// This prevents fragmented results for lists or short paragraphs while allowing
+			// distinct topics in a section to be separated.
+			if (similarity < 0.35 && currentChunkBlocks.join("\n\n").length > 200) {
 				chunks.push(currentChunkBlocks.join("\n\n"));
 				currentChunkBlocks = [blocks[i + 1]];
 			} else {
@@ -724,7 +769,7 @@ export class VectorEngine {
 		// Post-process: ensure no chunk is TOO large (fallback to recursive)
 		const finalChunks: string[] = [];
 		for (const chunk of chunks) {
-			if (chunk.length > 1500) {
+			if (chunk.length > 1200) {
 				const recursiveSplitter = new RecursiveCharacterTextSplitter({
 					chunkSize: 1000,
 					chunkOverlap: 250,
@@ -767,7 +812,7 @@ export class VectorEngine {
 		limit = 5,
 		rerank = false,
 		repositoryId?: string,
-		hybrid = false,
+		hybrid = true,
 	): Promise<MarkdownChunk[]> {
 		logger.info(
 			{ query, limit, rerank, repositoryId, hybrid },
@@ -777,10 +822,10 @@ export class VectorEngine {
 		const queryVectorStr = `[${queryVector.join(",")}]`;
 		const queryText = query.trim();
 
-		const VECTOR_WEIGHT = 1.0;
+		const VECTOR_WEIGHT = 1.2;
 		const TEXT_WEIGHT = 1.5;
-		const KEYWORD_WEIGHT = 2.0;
-		const HEADING_WEIGHT = 5.0; // Dramatically boost literal heading matches
+		const KEYWORD_WEIGHT = 1.5;
+		const HEADING_WEIGHT = 2.0; // Reduced from 5.0 to balance content search
 		const K = 60;
 		// RECALL_LIMIT ensures we consider enough candidates for RRF fusion
 		const RECALL_LIMIT = Math.max(200, rerank ? limit * 10 : limit * 5);
@@ -788,7 +833,66 @@ export class VectorEngine {
 		let results: MarkdownChunk[];
 
 		if (hybrid) {
-			const repoFilter = repositoryId ? "AND repository_id = $5" : "";
+			// Split query into words for heading match fallback
+			const queryWords = queryText
+				.split(/\s+/)
+				.filter((w) => w.length > 0)
+				.map((w) => `%${w}%`);
+
+			// Technical boost: check if query mentions common technical terms
+			const isTechnicalQuery =
+				/mermaid|flow|code|const|function|interface|type|class|graph|sequence|diagram/i.test(
+					queryText,
+				);
+			const TECH_BOOST = isTechnicalQuery ? 1.2 : 1.0;
+
+			const queryParams: unknown[] = [
+				queryVectorStr, // $1
+				queryText, // $2
+				limit, // $3
+				RECALL_LIMIT, // $4
+			];
+
+			let repoFilter = "";
+			let headingMatchQuery = "";
+
+			if (repositoryId) {
+				repoFilter = "AND repository_id = $5";
+				queryParams.push(repositoryId); // $5
+				queryParams.push(queryWords); // $6
+				headingMatchQuery = `
+          SELECT id, row_number() OVER (
+            ORDER BY 
+              (heading ILIKE $2) DESC, 
+              (heading ILIKE '%' || $2 || '%') DESC,
+              (SELECT count(*) FROM unnest($6::text[]) w WHERE heading ILIKE w) DESC,
+              length(heading) ASC
+          ) as rank
+          FROM markdown_chunks
+          WHERE (heading ILIKE '%' || $2 || '%') OR (
+            EXISTS (SELECT 1 FROM unnest($6::text[]) w WHERE heading ILIKE w)
+          )
+          ${repoFilter}
+          LIMIT $4
+        `;
+			} else {
+				queryParams.push(queryWords); // $5
+				headingMatchQuery = `
+          SELECT id, row_number() OVER (
+            ORDER BY 
+              (heading ILIKE $2) DESC, 
+              (heading ILIKE '%' || $2 || '%') DESC,
+              (SELECT count(*) FROM unnest($5::text[]) w WHERE heading ILIKE w) DESC,
+              length(heading) ASC
+          ) as rank
+          FROM markdown_chunks
+          WHERE (heading ILIKE '%' || $2 || '%') OR (
+            EXISTS (SELECT 1 FROM unnest($5::text[]) w WHERE heading ILIKE w)
+          )
+          LIMIT $4
+        `;
+			}
+
 			const res = await this.query<
 				MarkdownChunk & { distance: number; rrf_score: number }
 			>(
@@ -812,10 +916,7 @@ export class VectorEngine {
         LIMIT $4
       ),
       heading_search AS (
-        SELECT id, row_number() OVER (ORDER BY (heading ILIKE $2) DESC, length(heading) ASC) as rank
-        FROM markdown_chunks
-        WHERE heading ILIKE '%' || $2 || '%' ${repoFilter}
-        LIMIT $4
+        ${headingMatchQuery}
       )
       SELECT 
         m.id,
@@ -825,13 +926,14 @@ export class VectorEngine {
         m.last_modified,
         m.word_count,
         m.repository_id,
+        m.is_code,
         COALESCE((m.embedding <#> $1) * -1, 0.0) as distance,
         (
           COALESCE(${VECTOR_WEIGHT.toFixed(1)} / (${K}.0 + v.rank), 0.0) + 
           COALESCE(${TEXT_WEIGHT.toFixed(1)} / (${K}.0 + t.rank), 0.0) +
           COALESCE(${KEYWORD_WEIGHT.toFixed(1)} / (${K}.0 + k.rank), 0.0) +
           COALESCE(${HEADING_WEIGHT.toFixed(1)} / (${K}.0 + h.rank), 0.0)
-        )::float as rrf_score
+        ) * (CASE WHEN m.is_code AND ${isTechnicalQuery} THEN ${TECH_BOOST} ELSE 1.0 END)::float as rrf_score
       FROM markdown_chunks m
       LEFT JOIN vector_search v ON m.id = v.id
       LEFT JOIN text_search t ON m.id = t.id
@@ -841,9 +943,7 @@ export class VectorEngine {
       ORDER BY rrf_score DESC
       LIMIT $3;
     `,
-				repositoryId
-					? [queryVectorStr, queryText, limit, RECALL_LIMIT, repositoryId]
-					: [queryVectorStr, queryText, limit, RECALL_LIMIT],
+				queryParams,
 			);
 			results = res.rows;
 		} else {

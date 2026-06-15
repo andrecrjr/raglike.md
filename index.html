@@ -388,6 +388,7 @@
 
     <!-- AUTH_INJECTION -->
     <script>
+        console.log("raglike.md script initializing...");
         const searchInput = document.getElementById('searchQuery');
         const searchButton = document.getElementById('searchButton');
         const rerankToggle = document.getElementById('rerankToggle');
@@ -551,7 +552,7 @@
             }
         }
 
-        function _clearSearch() {
+        function clearSearch() {
             resultsArea.classList.add('hidden');
             searchWelcome.classList.remove('hidden');
             searchInput.value = '';
@@ -559,7 +560,7 @@
             resultCountLabel.innerText = `0 Matches`;
         }
 
-        async function _deleteDoc(path) {
+        async function deleteDoc(path) {
             if (!confirm(`Permanently decommission and purge technical asset: ${path.split('/').pop()}?`)) return;
             
             try {
@@ -687,7 +688,7 @@
             }
         });
 
-        async function _viewFullDoc(path) {
+        async function viewFullDoc(path) {
             try {
                 console.log(`Attempting to read document: ${path}`);
                 const res = await fetch(`/read?path=${encodeURIComponent(path)}`, {
@@ -733,7 +734,18 @@
             }
         });
 
+        // Expose functions to window for global access from inline onclick handlers
+        window.toggleSidebar = toggleSidebar;
+        window.switchTab = switchTab;
+        window.performSearch = performSearch;
+        window.clearSearch = clearSearch;
+        window.deleteDoc = deleteDoc;
+        window.loadDocs = loadDocs;
+        window.viewFullDoc = viewFullDoc;
+        window.closeModal = closeModal;
+
         // Dashboard Initialization
+        console.log("raglike.md script fully loaded, initializing dashboard...");
         loadDocs();
     </script>
 </body>

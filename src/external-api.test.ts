@@ -45,8 +45,7 @@ describe("External Embedding API", () => {
 		expect(JSON.parse(options.body as string)).toEqual({ texts: ["test"] });
 		const headers = options.headers as Record<string, string>;
 		expect(headers.Authorization).toBe("Bearer test-token");
-		});
-
+	});
 
 	test("Should fallback to local when API_EMBEDDING_URL is NOT set", async () => {
 		delete process.env.API_EMBEDDING_URL;

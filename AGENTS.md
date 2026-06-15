@@ -25,11 +25,11 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
 `raglike-md` uses a sophisticated two-stage search pipeline to ensure both speed and precision:
 
 1.  **Stage 1: Hybrid Retrieval (4-way RRF)**
-    - Combines four distinct signals using **Reciprocal Rank Fusion (RRF)**:
+    - Combines four distinct signals using **Reciprocal Rank Fusion (RRF)** (Enabled by default):
         - **Vector Search (1.0)**: Semantic similarity using `all-mpnet-base-v2`.
         - **English Text Search (1.2)**: Keyword matching with stemming and stop-words.
         - **Simple Text Search (1.5)**: Literal keyword matching (no stemming) to preserve technical terms.
-        - **Heading Literal Match (2.0)**: Strong boost for queries appearing directly in document headings, favoring shorter, more precise titles.
+        - **Heading Literal Match (5.0)**: Strong boost for queries appearing directly in document headings. Now supports flexible word-based matching for better resilience to phrasing and typos.
     - Parameters: `k = 60`, `recall_limit = 100+`.
 
 
