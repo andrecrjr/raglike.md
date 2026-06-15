@@ -23,15 +23,22 @@ export class GitManager {
 	): Promise<void> {
 		return new Promise((resolve, reject) => {
 			const process = spawn(command, args, { cwd });
+			const stderr: string[] = [];
+
+			process.stderr?.on("data", (data) => {
+				stderr.push(data.toString());
+			});
 
 			process.on("close", (code) => {
 				if (code === 0) resolve();
-				else
+				else {
+					const errorMsg = stderr.join("").trim();
 					reject(
 						new Error(
-							`Command ${command} ${args.join(" ")} failed with code ${code}`,
+							`Command ${command} ${args.join(" ")} failed with code ${code}.${errorMsg ? ` Error: ${errorMsg}` : ""}`,
 						),
 					);
+				}
 			});
 
 			process.on("error", (err) => reject(err));
@@ -68,18 +75,22 @@ export class GitManager {
 	}
 
 	private async indexRepoDirectory(dir: string, repositoryId: string) {
-		const files = this.getFilesRecursively(dir);
+		const files = await this.getFilesRecursively(dir);
 		for (const file of files) {
 			await this.engine.indexSingleFile(file, repositoryId);
 		}
 	}
 
-	private getFilesRecursively(dir: string): string[] {
-		const entries = fs.readdirSync(dir, { withFileTypes: true });
-		const files = entries.map((entry) => {
-			const res = path.resolve(dir, entry.name);
-			return entry.isDirectory() ? this.getFilesRecursively(res) : res;
-		});
+	private async getFilesRecursively(dir: string): Promise<string[]> {
+		const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+		const files = await Promise.all(
+			entries.map(async (entry) => {
+				const res = path.resolve(dir, entry.name);
+				return entry.isDirectory()
+					? await this.getFilesRecursively(res)
+					: [res];
+			}),
+		);
 		return files.flat().filter((f) => f.endsWith(".md"));
 	}
 }

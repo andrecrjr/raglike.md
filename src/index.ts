@@ -58,4 +58,25 @@ if (includeMcp) {
 	await startMcpServer(engine);
 }
 
+const shutdown = async (signal: string) => {
+	logger.info(
+		{ signal },
+		"Received shutdown signal. Disposing engine connections...",
+	);
+	try {
+		await engine.destroy();
+		logger.info("Database engine connections closed gracefully.");
+		process.exit(0);
+	} catch (err) {
+		logger.error(
+			err,
+			"Failed to close database engine connections during shutdown",
+		);
+		process.exit(1);
+	}
+};
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
 logger.info("Application context fully stabilized and active.");

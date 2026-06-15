@@ -86,23 +86,22 @@ export function createMcpServer(engine: VectorEngine) {
 		],
 	}));
 
-	server.setRequestHandler(CallToolRequestSchema, async (req) => {
-		logger.info(
-			{ tool: req.params.name, arguments: req.params.arguments },
-			"MCP Tool call",
-		);
-		if (req.params.name === "semantic_markdown_search") {
+	const handlers: Record<
+		string,
+		(args: Record<string, unknown> | undefined) => Promise<{
+			content: Array<{ type: string; text: string }>;
+			isError?: boolean;
+		}>
+	> = {
+		semantic_markdown_search: async (args) => {
 			try {
-				const query = String(req.params.arguments?.query || "");
-				const limit = Number(req.params.arguments?.limit || 3);
-				const rerank = Boolean(req.params.arguments?.rerank || false);
-				const repository = req.params.arguments?.repository
-					? String(req.params.arguments.repository)
+				const query = String(args?.query || "");
+				const limit = Number(args?.limit || 3);
+				const rerank = Boolean(args?.rerank || false);
+				const repository = args?.repository
+					? String(args.repository)
 					: undefined;
-				const hybrid =
-					req.params.arguments?.hybrid !== undefined
-						? Boolean(req.params.arguments.hybrid)
-						: true;
+				const hybrid = args?.hybrid !== undefined ? Boolean(args.hybrid) : true;
 
 				const matches = await engine.search(
 					query,
@@ -138,10 +137,10 @@ export function createMcpServer(engine: VectorEngine) {
 					isError: true,
 				};
 			}
-		}
+		},
 
-		if (req.params.name === "read_chunk_neighbors") {
-			const chunkId = Number(req.params.arguments?.chunk_id);
+		read_chunk_neighbors: async (args) => {
+			const chunkId = Number(args?.chunk_id);
 			const neighbors = await engine.getChunkNeighbors(chunkId);
 
 			if (!neighbors) {
@@ -170,10 +169,10 @@ export function createMcpServer(engine: VectorEngine) {
 			}
 
 			return { content: [{ type: "text", text }] };
-		}
+		},
 
-		if (req.params.name === "get_full_document") {
-			const filePath = String(req.params.arguments?.file_path || "");
+		get_full_document: async (args) => {
+			const filePath = String(args?.file_path || "");
 			try {
 				const content = await engine.readDocument(filePath);
 				if (!content)
@@ -191,9 +190,21 @@ export function createMcpServer(engine: VectorEngine) {
 					isError: true,
 				};
 			}
+		},
+	};
+
+	server.setRequestHandler(CallToolRequestSchema, async (req) => {
+		logger.info(
+			{ tool: req.params.name, arguments: req.params.arguments },
+			"MCP Tool call",
+		);
+
+		const handler = handlers[req.params.name];
+		if (!handler) {
+			throw new Error(`Tool ${req.params.name} unexpected.`);
 		}
 
-		throw new Error("Tool unexpected.");
+		return handler(req.params.arguments);
 	});
 
 	return server;

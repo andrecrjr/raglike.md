@@ -397,35 +397,30 @@ export class VectorEngine {
 				"ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS is_code BOOLEAN DEFAULT FALSE;",
 			);
 
-			// Check if we need to upgrade search_vector to weighted version
-			// In PostgreSQL we can't easily ALTER a GENERATED column's expression,
-			// so we drop and recreate if it's already there to ensure the new weights apply.
-			try {
-				await this.exec(
-					"ALTER TABLE markdown_chunks DROP COLUMN IF EXISTS search_vector;",
-				);
-				await this.exec(
-					"ALTER TABLE markdown_chunks DROP COLUMN IF EXISTS search_vector_simple;",
-				);
-			} catch (_e) {
-				logger.debug(
-					"search_vector columns did not exist or could not be dropped.",
-				);
+			// Check if search_vector columns already exist to avoid redundant drops and DDL locks
+			const hasSearchVector = await this.query<{ exists: boolean }>(
+				`SELECT EXISTS (
+					SELECT FROM information_schema.columns 
+					WHERE table_name = 'markdown_chunks' AND column_name = 'search_vector'
+				)`,
+				[],
+			);
+
+			if (!hasSearchVector.rows[0].exists) {
+				await this.exec(`
+					ALTER TABLE markdown_chunks ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
+						setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
+						setweight(to_tsvector('english', coalesce(content, '')), 'B')
+					) STORED;
+				`);
+
+				await this.exec(`
+					ALTER TABLE markdown_chunks ADD COLUMN search_vector_simple tsvector GENERATED ALWAYS AS (
+						setweight(to_tsvector('simple', coalesce(heading, '')), 'A') || 
+						setweight(to_tsvector('simple', coalesce(content, '')), 'B')
+					) STORED;
+				`);
 			}
-
-			await this.exec(`
-		ALTER TABLE markdown_chunks ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
-		setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
-		setweight(to_tsvector('english', coalesce(content, '')), 'B')
-		) STORED;
-		`);
-
-			await this.exec(`
-		ALTER TABLE markdown_chunks ADD COLUMN search_vector_simple tsvector GENERATED ALWAYS AS (
-		setweight(to_tsvector('simple', coalesce(heading, '')), 'A') || 
-		setweight(to_tsvector('simple', coalesce(content, '')), 'B')
-		) STORED;
-		`);
 		} catch (_e) {
 			logger.warn(
 				"Could not update schema columns, they might already exist or the syntax is unsupported by this version.",
@@ -506,7 +501,7 @@ export class VectorEngine {
 	}
 
 	private async discoverFiles(dirPath: string): Promise<string[]> {
-		const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+		const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
 		const files: string[] = [];
 
 		for (const entry of entries) {
