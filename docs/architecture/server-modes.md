@@ -1,51 +1,54 @@
 # Server Modes
 
-The application supports two distinct operational modes.
+`raglike-md` can run in two operational modes depending on how you intend to consume its search tools and endpoints. Both modes run on top of the same `VectorEngine` layer and share the same database.
 
-## 1. MCP Mode (Default)
-This is the default mode, optimized for integration with AI hosts like Claude Desktop or other MCP-compatible clients.
+---
 
-- **Transport**: Standard IO (stdin/stdout).
-- **Communication Protocol**: JSON-RPC based Model Context Protocol.
+## 1. MCP Mode (Default / Stdio)
 
-### Tools Available
-- `semantic_markdown_search`: Searches through nested workspace markdown files using local pgvector embeddings.
-- `read_chunk_neighbors`: Fetches the text immediately preceding and following a specific chunk. Useful for expanding context around a search result.
-- `get_full_document`: Retrieves the full raw markdown content of a file.
+This mode is designed for native desktop or terminal integrations where the AI client spawns the `raglike-md` process directly.
 
-> [!TIP]
-> See the **[MCP Codex](../../README.md#📚-mcp-codex-tool-usage-examples)** in the root README for concrete examples of how to use these tools.
+*   **Transport**: Standard Input/Output (`stdio`).
+*   **Protocol**: JSON-RPC based Model Context Protocol (MCP).
+*   **Security**: Runs within the boundary of the host operating system. The client controls the process lifecycle.
+*   **Usage**:
+    ```bash
+    bun start
+    ```
 
-### Usage
-```bash
-bun start
-```
+In this mode, standard logs go to stderr to prevent polluting the JSON-RPC communication on stdout.
+
+---
 
 ## 2. HTTP API Mode (Unified)
-This mode is useful for standalone use, integration with traditional web applications, or remote MCP access.
 
-- **Transport**: HTTP/TCP.
-- **Port**: 4321 (default).
+In this mode, `raglike-md` starts a Bun-native web server that hosts REST API endpoints, an SSE-based MCP gateway, and a clean web-based search dashboard.
 
-### Endpoints
-- **`/mcp`**: Unified endpoint for MCP-over-HTTP (Streamable HTTP). 
-    - `GET /mcp`: Establish an SSE stream.
-    - `POST /mcp`: Send JSON-RPC messages.
-    - `DELETE /mcp`: Close the session.
-- `GET /list-docs`: Lists all indexed markdown documents.
-- `GET /read?path=...`: Retrieves the full raw markdown content of a file.
-- `POST /search`: Conceptual search using local embeddings. Expects JSON body: `{"query": "...", "limit": 3}`.
-- `POST /upload`: Uploads a `.md` or `.pdf` file to the `.docs-ingested/` directory and indexes it immediately. Expects `multipart/form-data`.
-- `DELETE /doc?path=...`: Removes a document from both the filesystem and the vector database.
-- `GET /index.html`: Serves a simple web interface for searching and managing documents.
+*   **Transport**: HTTP/TCP.
+*   **Port**: `4321` (configurable via `PORT`).
+*   **Usage**:
+    ```bash
+    bun start --api
+    ```
 
-### Usage
-```bash
-bun start --api
-```
+### Exposed Services:
 
-## Persistence across Modes
-Both modes utilize the unified `VectorEngine` database layer. Whether running as an MCP server or an HTTP API, the system will:
-1. Detect and connect to the persistent database (Local PGlite or External Postgres).
-2. Skip auto-ingestion if data is already present.
-3. Provide consistent, granular search results across all interfaces.
+1.  **Stateful MCP SSE Gateway (`/mcp`)**: Allows IDEs like Cursor or Roo Code to connect remotely to the server over Server-Sent Events.
+2.  **Web Search Dashboard (`/` or `/index.html`)**: A simple, interactive user interface served to search, upload, index, or delete documents.
+3.  **REST Endpoints**: Programmatic endpoints for document discovery (`/list-docs`), retrieval (`/read`), custom embeddings (`/api/v1/embeddings`), and git push synchronizations (`/api/v1/sync/webhook`).
+
+### Security & Authentication:
+
+If the `API_TOKEN` environment variable is defined:
+*   All requests (except webhook verification and root page/assets) must supply the token in the request headers: `Authorization: Bearer <token>`.
+*   If the token is set, it is automatically injected into the frontend `index.html` file template on serve so the web interface can communicate with the endpoints out-of-the-box.
+*   Webhook endpoints bypass bearer token verification and instead perform HMAC-SHA256 signature checks (GitHub) or plain token checks (GitLab) against the `WEBHOOK_SECRET` environment variable.
+
+---
+
+## 🏛 Database Persistence & Sync
+
+Regardless of the selected mode, both interfaces hook into the unified `VectorEngine`:
+*   **Shared State**: Both modes query and mutate the same SQLite/PGlite database files in `./.db` (or external database if `POSTGRES_URL` is set).
+*   **Cold Starts**: The engine checks the database on startup. If data is present, it skips auto-indexing the `docs/` folder, ensuring fast boot times.
+*   **Dynamic Indexing**: Uploads or deletes processed in HTTP API mode immediately update the database and become queryable by active MCP sessions in real-time.

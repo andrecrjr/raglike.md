@@ -1,41 +1,78 @@
-# Setting up Git Webhooks for Zero-UI Ingestion
+# Git Webhooks Setup Guide
 
-`raglike-md` supports automatic indexing of your repositories via webhooks. This guide explains how to set them up for GitHub and GitLab.
+`raglike-md` supports automatic, zero-UI index synchronization via push webhooks from GitHub and GitLab. When code is pushed, the server pulls the latest changes, splits modified files, and updates the database.
 
-## 1. Prerequisites
+---
 
-- Your `raglike-md` instance must be accessible from the internet (e.g., via ngrok, Cloudflare Tunnel, or a public IP).
-- You have configured a `WEBHOOK_SECRET` environment variable on your `raglike-md` server.
+## 🔒 Security Configuration
 
-## 2. GitHub Setup
+To enable webhook endpoints, you **must** configure a `WEBHOOK_SECRET` environment variable on your `raglike-md` instance:
 
-1. Go to your repository on GitHub.
-2. Navigate to **Settings** > **Webhooks** > **Add webhook**.
-3. **Payload URL:** `http://your-server.com:4321/api/v1/sync/webhook`
-4. **Content type:** `application/json`
-5. **Secret:** (Matches your `WEBHOOK_SECRET`)
-6. **Which events would you like to trigger this webhook?** Select **Just the push event**.
-7. Click **Add webhook**.
+*   **GitHub**: The server validates payloads using **HMAC-SHA256** signature verification using the secret.
+*   **GitLab**: The server validates payloads by comparing the header token directly against the secret.
 
-## 3. GitLab Setup
+---
 
-1. Go to your project on GitLab.
-2. Navigate to **Settings** > **Webhooks**.
-3. **URL:** `http://your-server.com:4321/api/v1/sync/webhook`
-4. **Secret token:** (Matches your `WEBHOOK_SECRET`)
-5. **Trigger:** Select **Push events**.
-6. Click **Add webhook**.
+## 🐙 1. GitHub Integration
 
-## 4. How it Works
+### Step-by-Step Setup:
+1.  Go to your repository settings on GitHub.
+2.  Navigate to **Settings** > **Webhooks** > **Add webhook**.
+3.  **Payload URL**: `http://<your-server-ip>:4321/api/v1/sync/webhook`
+4.  **Content type**: `application/json`
+5.  **Secret**: Enter the exact string set in your `WEBHOOK_SECRET` env variable.
+6.  **Which events would you like to trigger this webhook?**: Choose **Just the push event**.
+7.  Click **Add webhook**.
 
-When a push occurs:
-1. GitHub/GitLab sends a POST request to `raglike-md`.
-2. `raglike-md` validates the signature or secret token.
-3. If valid, it extracts the repository URL and name.
-4. It clones (if first time) or pulls the repository into the `.repos/` directory.
-5. It recursively indexes all `.md` files in the repository, tagging them with the `repository_id` (e.g., `owner-repo`).
+GitHub will send a ping event to test connectivity. The server should respond with `400` ("Unsupported event") but show signature validation passed in the logs.
 
-## 5. Security Notes
+---
 
-- **Signature Validation:** `raglike-md` uses HMAC-SHA256 for GitHub and a plain token for GitLab.
-- **Scoping:** Use the `repository` argument in the `semantic_markdown_search` tool to search within specific repositories.
+## 🦊 2. GitLab Integration
+
+### Step-by-Step Setup:
+1.  Navigate to your GitLab project settings.
+2.  Select **Settings** > **Webhooks**.
+3.  **URL**: `http://<your-server-ip>:4321/api/v1/sync/webhook`
+4.  **Secret token**: Enter the exact string set in your `WEBHOOK_SECRET` env variable.
+5.  **Trigger**: Select **Push events**.
+6.  Click **Add webhook**.
+
+---
+
+## ⚙️ How Synchronization Works
+
+```mermaid
+sequenceDiagram
+    participant Git as GitHub / GitLab
+    participant API as REST API (/api/v1/sync/webhook)
+    participant GM as GitManager
+    participant VE as VectorEngine
+    participant DB as Database (PGlite / Postgres)
+
+    Git->>API: Push Webhook Event (Payload + Signature)
+    API->>API: Validate Signature / Secret Token
+    API->>GM: Trigger Repository Sync (repoUrl, repoId)
+    API-->>Git: 200 OK (Sync triggered)
+    
+    rect rgb(200, 220, 240)
+        Note over GM, DB: Asynchronous Sync Task
+        alt Repository directory does not exist
+            GM->>GM: git clone <repoUrl> into .repos/<repoId>
+        else Repository directory exists
+            GM->>GM: git pull in .repos/<repoId>
+        end
+        GM->>VE: Index Directory (.md files)
+        VE->>DB: Ingest, chunk, and insert with repository_id = <repoId>
+    end
+```
+
+1.  **Incoming Push Payload**: The server processes Git webhook event payloads. It parses out the repository clone URL (`clone_url` or `git_http_url`) and maps the repository name into a unique path-safe string (e.g., `owner-name` instead of `owner/name`).
+2.  **Git Manager Integration**:
+    *   If the repository has never been indexed before, `GitManager` clones it into the `.repos/<repository_id>` subdirectory.
+    *   If it is already present, it navigates into the folder and executes `git pull`.
+3.  **Re-indexing & Tagging**:
+    *   The engine scans the repository for all `.md` files.
+    *   It chunks the files, generates embeddings, and inserts them into the database.
+    *   **Crucial Step**: Each record is tagged with the `repository_id` column.
+4.  **Scoping Queries**: Once indexed, you can restrict semantic searches to this specific repository using the `repository` argument in the search endpoints/tools.

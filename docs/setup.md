@@ -1,78 +1,94 @@
 # Setup Guide
 
-To set up this system, you need [Bun](https://bun.sh) installed.
+`raglike-md` can be run either locally via **Bun** or as a containerized service via **Docker**. This guide covers the complete installation, environment configuration, and server validation steps.
 
-## Quick Start
+---
+
+## 🚀 Quick Start
+
+### Local Setup (Bun)
+To set up this system locally, you need [Bun](https://bun.sh) installed (version 1.0 or higher).
 
 1. **Install dependencies**:
    ```bash
    bun install
    ```
 
-2. **Run the server**:
+2. **Configure environment variables**:
+   Copy the example environment file and configure your settings (e.g. define `POSTGRES_URL` if connecting to an external/outside Postgres instance):
+   ```bash
+   cp .env.example .env.local
+   ```
+
+3. **Run the server**:
    ```bash
    # Default MCP mode (Stdio)
    bun start
 
-   # HTTP API mode
+   # HTTP API mode (includes Web UI & REST API)
    bun start --api
    ```
 
-## Model Context Protocol (MCP) Setup
+### Docker Setup (Preferred)
+The easiest way to run the full stack (Search Engine + Postgres Database) is using Docker Compose. This ensures a consistent runtime environment and handles persistence automatically.
 
-`raglike-md` implements the Model Context Protocol, allowing it to be used as a tool provider for AI assistants like Claude Desktop.
-
-### Claude Desktop Configuration
-
-To use `raglike-md` with Claude Desktop, add the following to your `claude_desktop_config.json` (usually located at `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
-
-```json
-{
-  "mcpServers": {
-    "raglike-md": {
-      "command": "bun",
-      "args": ["run", "src/index.ts", "--mcp"],
-      "cwd": "/path/to/your/raglike-md",
-      "env": {
-        "POSTGRES_URL": "postgres://user:pass@localhost:5432/raglike"
-      }
-    }
-  }
-}
-```
-
-*Note: Replace `/path/to/your/raglike-md` with the actual absolute path to the project directory.*
-
-## HTTP API Setup
-
-The REST API provides a simple way to interact with the search engine from any web application.
-
-### Start the API Server
 ```bash
-bun start --api
+# Start the entire stack in the background
+docker compose up -d
+
+# View real-time logs to confirm initialization
+docker compose logs -f raglike-md
 ```
 
-The server will be available at `http://localhost:4321`.
+The database data is persisted under the `pgdata` volume, and the server runs on port `4321`.
 
-### Environment Variables
-- `ENABLE_API`: Set to `true` to enable the REST API.
-- `ENABLE_MCP`: Set to `true` to enable the MCP server.
-- `HOST`: The hostname/interface to bind the server to (default: `0.0.0.0` to allow all network access).
-- `POSTGRES_URL`: Connection string for an external Postgres database (e.g., `postgres://user:pass@localhost:5432/raglike`). If not provided, the engine defaults to a local PGlite instance in the `.db/` folder.
+---
 
-## Testing the API
+## ⚙️ Environment Variables
 
-Once the server is running (either via Bun or Docker), you can test the search functionality using `curl`.
+Configure these variables in a `.env` file at the root of the project or pass them directly to the container/process environment.
 
-### Basic Search
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `ENABLE_API` | `boolean` | `true` (CLI flag overrides) | Set to `true` to enable the REST API server. |
+| `ENABLE_MCP` | `boolean` | `true` (CLI flag overrides) | Set to `true` to run the Model Context Protocol (MCP) server. |
+| `PORT` | `number` | `4321` | The port the HTTP server binds to. |
+| `HOST` | `string` | `0.0.0.0` | The network interface host to bind the server to. |
+| `API_TOKEN` | `string` | (None) | **Critical Security**: If set, enables Bearer token authentication on all REST endpoints and lists. |
+| `WEBHOOK_SECRET` | `string` | (None) | Secret token used to validate incoming GitHub/GitLab webhook payloads. |
+| `POSTGRES_URL` | `string` | (None) | Database connection string (e.g. `postgres://user:pass@host:5432/db`). If omitted, defaults to an embedded **PGlite** instance. |
+| `API_EMBEDDING_URL` | `string` | (None) | Optional. Directs the engine to use an external API for generating embeddings instead of local execution. |
+| `API_EMBEDDING_TOKEN`| `string` | (None) | Optional. Bearer auth token for the external embedding API endpoint. |
+
+---
+
+## 🔒 Security Configuration
+
+### API Token Protection
+When you define the `API_TOKEN` environment variable, the server secures all endpoints. Clients must send the token in the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer your_secure_token" http://localhost:4321/list-docs
+```
+
+### Git Webhook Signature Verification
+To prevent malicious payload injections, set a `WEBHOOK_SECRET`. The server uses this secret to perform HMAC-SHA256 verification on payloads sent from GitHub and token validation for GitLab.
+
+---
+
+## 🔍 Validation & Testing
+
+Once your server is running, you can test operations via standard tools.
+
+### 1. Check HTTP Search Endpoint
 ```bash
 curl -X POST http://localhost:4321/search \
   -H "Content-Type: application/json" \
   -d '{"query": "architecture overview", "limit": 2}'
 ```
 
-### Search with Reranking (High Precision)
-To enable the Cross-Encoder reranker for more accurate results, add `"rerank": true` to your request. **Note:** This will significantly increase the response time as it performs a secondary retrieval pass using a transformer model on the CPU.
+### 2. Check Search with Reranking
+Enable the Cross-Encoder reranking pass to verify high-precision results:
 ```bash
 curl -X POST http://localhost:4321/search \
   -H "Content-Type: application/json" \
@@ -83,25 +99,13 @@ curl -X POST http://localhost:4321/search \
   }'
 ```
 
-## Docker Setup
+---
 
-The easiest way to run the full stack (Search Engine + Postgres Database) is using Docker Compose. This is the **preferred method** for development and testing.
+## 📚 Detailed Architecture & Guides
 
-```bash
-# Build and start the stack
-docker compose up -d --build
-
-# View logs
-docker compose logs -f raglike-md
-```
-
-The Docker setup automatically configures the environment variables and volumes for persistent data. When the container starts, it will automatically download the necessary embedding and reranker models.
-
-## Detailed Documentation
-
-For more information on how the system works and how to integrate it, refer to the following documents:
-
-- [Architecture Overview](architecture/overview.md)
-- [Server Modes & Usage](architecture/server-modes.md)
-- [Vector Engine Details](architecture/vector-engine.md)
-- [Search Protocol](architecture/protocol.md)
+For deep dives into the components and client integration, explore:
+*   [Architecture Overview](architecture/overview.md)
+*   [Server Modes & Usage](architecture/server-modes.md)
+*   [Vector Engine Details](architecture/vector-engine.md)
+*   [Search Protocol Reference](architecture/protocol.md)
+*   [MCP Client Setup Guide](guides/mcp-client-setups.md)

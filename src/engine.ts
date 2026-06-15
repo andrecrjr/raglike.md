@@ -50,6 +50,117 @@ export interface MarkdownChunk {
 	word_count?: number;
 	repository_id?: string;
 	is_code?: boolean;
+	language?: string;
+}
+
+export function detectLanguage(
+	text: string,
+	supportedLanguages: string[],
+): string {
+	const normalized = text.toLowerCase();
+
+	const stopWords: Record<string, string[]> = {
+		english: [
+			"the",
+			"and",
+			"of",
+			"to",
+			"in",
+			"is",
+			"that",
+			"it",
+			"for",
+			"on",
+			"with",
+			"as",
+		],
+		portuguese: [
+			"o",
+			"a",
+			"os",
+			"as",
+			"de",
+			"do",
+			"da",
+			"em",
+			"um",
+			"uma",
+			"para",
+			"com",
+			"por",
+			"que",
+			"se",
+		],
+		spanish: [
+			"el",
+			"la",
+			"los",
+			"las",
+			"de",
+			"del",
+			"en",
+			"un",
+			"una",
+			"para",
+			"con",
+			"por",
+			"que",
+			"como",
+		],
+		french: [
+			"le",
+			"la",
+			"les",
+			"de",
+			"des",
+			"en",
+			"un",
+			"une",
+			"pour",
+			"avec",
+			"par",
+			"que",
+			"dans",
+		],
+		german: [
+			"der",
+			"die",
+			"das",
+			"und",
+			"ist",
+			"in",
+			"zu",
+			"den",
+			"von",
+			"mit",
+			"auf",
+			"für",
+		],
+	};
+
+	let bestLang = "english"; // Default fallback
+	let maxCount = 0;
+
+	for (const lang of supportedLanguages) {
+		const words = stopWords[lang];
+		if (!words) continue;
+
+		let count = 0;
+		for (const word of words) {
+			const regex = new RegExp(`\\b${word}\\b`, "g");
+			const matches = normalized.match(regex);
+			if (matches) {
+				count += matches.length;
+			}
+		}
+
+		if (count > maxCount) {
+			maxCount = count;
+			bestLang = lang;
+		}
+	}
+
+	return bestLang;
 }
 
 // Global cache for models to avoid redundant loading
@@ -490,20 +601,28 @@ export class VectorEngine {
 			const nextSection = i < sections.length - 1 ? sections[i + 1] : null;
 
 			// Step 2: Semantic Sub-Split within each section
-			const subChunks = await this.semanticSubSplit(section.content);
+			const subChunks = await this.semanticSubSplit(section.nodes);
 
 			// Step 3: Implement Context Slop (Boundary Enrichment)
 			if (subChunks.length > 0) {
 				// Prepend last sentence of previous section to first chunk
 				if (prevSection) {
-					const lastSentence = this.getLastSentence(prevSection.content);
+					const prevText = toMarkdown({
+						type: "root",
+						children: prevSection.nodes,
+					});
+					const lastSentence = this.getLastSentence(prevText);
 					if (lastSentence && lastSentence.length > 5) {
 						subChunks[0] = `...${lastSentence}\n\n${subChunks[0]}`;
 					}
 				}
 				// Append first sentence of following section to last chunk
 				if (nextSection) {
-					const firstSentence = this.getFirstSentence(nextSection.content);
+					const nextText = toMarkdown({
+						type: "root",
+						children: nextSection.nodes,
+					});
+					const firstSentence = this.getFirstSentence(nextText);
 					if (firstSentence && firstSentence.length > 5) {
 						subChunks[subChunks.length - 1] = `${
 							subChunks[subChunks.length - 1]
@@ -669,9 +788,9 @@ export class VectorEngine {
 
 	private structuralSplit(
 		content: string,
-	): { breadcrumbs: string[]; content: string }[] {
+	): { breadcrumbs: string[]; nodes: Content[] }[] {
 		const tree = fromMarkdown(content);
-		const sections: { breadcrumbs: string[]; content: string }[] = [];
+		const sections: { breadcrumbs: string[]; nodes: Content[] }[] = [];
 
 		const processNodes = (nodes: Content[], breadcrumbs: string[]) => {
 			let currentSectionContent: Content[] = [];
@@ -682,10 +801,7 @@ export class VectorEngine {
 					if (currentSectionContent.length > 0) {
 						sections.push({
 							breadcrumbs: [...breadcrumbs],
-							content: toMarkdown({
-								type: "root",
-								children: currentSectionContent,
-							}),
+							nodes: currentSectionContent,
 						});
 						currentSectionContent = [];
 					}
@@ -703,10 +819,7 @@ export class VectorEngine {
 			if (currentSectionContent.length > 0) {
 				sections.push({
 					breadcrumbs: [...breadcrumbs],
-					content: toMarkdown({
-						type: "root",
-						children: currentSectionContent,
-					}),
+					nodes: currentSectionContent,
 				});
 			}
 		};
@@ -715,16 +828,19 @@ export class VectorEngine {
 		return sections;
 	}
 
-	private async semanticSubSplit(text: string): Promise<string[]> {
+	private async semanticSubSplit(nodes: Content[]): Promise<string[]> {
 		const apiUrl = process.env.API_EMBEDDING_URL;
-		if (!this.splitterExtractor && !apiUrl) return [text];
+		if (!this.splitterExtractor && !apiUrl) {
+			return [toMarkdown({ type: "root", children: nodes }).trim()];
+		}
 
-		// Split by blocks (double newlines) to preserve Markdown structure
-		const blocks = text
-			.split(/\n\n+/)
-			.map((b) => b.trim())
+		// Convert each AST node to a separate text block to preserve markdown structure exactly
+		const blocks = nodes
+			.map((node) => toMarkdown({ type: "root", children: [node] }).trim())
 			.filter((b) => b.length > 0);
-		if (blocks.length <= 1) return [text];
+		if (blocks.length <= 1) {
+			return [toMarkdown({ type: "root", children: nodes }).trim()];
+		}
 
 		// Batch embedding for all blocks
 		let vectors: Float32Array[] = [];
@@ -745,7 +861,7 @@ export class VectorEngine {
 				vectors.push(data.slice(i * dimension, (i + 1) * dimension));
 			}
 		} else {
-			return [text];
+			return [toMarkdown({ type: "root", children: nodes }).trim()];
 		}
 
 		const chunks: string[] = [];
@@ -753,11 +869,15 @@ export class VectorEngine {
 
 		for (let i = 0; i < vectors.length - 1; i++) {
 			const similarity = this.cosineSimilarity(vectors[i], vectors[i + 1]);
+			const nextIsCode = blocks[i + 1].trim().startsWith("```");
 
-			// Lower threshold (0.35) and ensure we don't split chunks that are too small (< 200 chars)
-			// This prevents fragmented results for lists or short paragraphs while allowing
-			// distinct topics in a section to be separated.
-			if (similarity < 0.35 && currentChunkBlocks.join("\n\n").length > 200) {
+			// Lower threshold (0.35) and ensure we don't split chunks that are too small (< 200 chars).
+			// Force-bundle code blocks (nextIsCode) to preserve natural language context.
+			if (
+				!nextIsCode &&
+				similarity < 0.35 &&
+				currentChunkBlocks.join("\n\n").length > 200
+			) {
 				chunks.push(currentChunkBlocks.join("\n\n"));
 				currentChunkBlocks = [blocks[i + 1]];
 			} else {
@@ -766,10 +886,12 @@ export class VectorEngine {
 		}
 		chunks.push(currentChunkBlocks.join("\n\n"));
 
-		// Post-process: ensure no chunk is TOO large (fallback to recursive)
+		// Post-process: ensure no chunk is TOO large (fallback to recursive).
+		// We do NOT recursively split chunks that contain code blocks to prevent breaking code fences/syntax.
 		const finalChunks: string[] = [];
 		for (const chunk of chunks) {
-			if (chunk.length > 1200) {
+			const hasCode = chunk.includes("```");
+			if (chunk.length > 1200 && !hasCode) {
 				const recursiveSplitter = new RecursiveCharacterTextSplitter({
 					chunkSize: 1000,
 					chunkOverlap: 250,
@@ -822,10 +944,10 @@ export class VectorEngine {
 		const queryVectorStr = `[${queryVector.join(",")}]`;
 		const queryText = query.trim();
 
-		const VECTOR_WEIGHT = 1.2;
-		const TEXT_WEIGHT = 1.5;
-		const KEYWORD_WEIGHT = 1.5;
-		const HEADING_WEIGHT = 2.0; // Reduced from 5.0 to balance content search
+		const VECTOR_WEIGHT = 1.8; // High semantic priority
+		const TEXT_WEIGHT = 1.8; // High FTS priority
+		const KEYWORD_WEIGHT = 1.8; // High simple keyword priority for code matches
+		const HEADING_WEIGHT = 0.8; // Lower heading bias
 		const K = 60;
 		// RECALL_LIMIT ensures we consider enough candidates for RRF fusion
 		const RECALL_LIMIT = Math.max(200, rerank ? limit * 10 : limit * 5);
@@ -839,9 +961,9 @@ export class VectorEngine {
 				.filter((w) => w.length > 0)
 				.map((w) => `%${w}%`);
 
-			// Technical boost: check if query mentions common technical terms
+			// Technical boost: check if query mentions common technical terms or code syntax patterns
 			const isTechnicalQuery =
-				/mermaid|flow|code|const|function|interface|type|class|graph|sequence|diagram/i.test(
+				/mermaid|flow|code|const|function|interface|type|class|graph|sequence|diagram|\b[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\b|\b[a-zA-Z_][a-zA-Z0-9_]*\(\)|\b\.[a-zA-Z0-9]+\b/i.test(
 					queryText,
 				);
 			const TECH_BOOST = isTechnicalQuery ? 1.2 : 1.0;
@@ -904,13 +1026,13 @@ export class VectorEngine {
         LIMIT $4
       ),
       text_search AS (
-        SELECT id, row_number() OVER (ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english', $2)) DESC) as rank
+        SELECT id, row_number() OVER (ORDER BY ts_rank_cd('{0.1, 0.2, 1.0, 0.6}', search_vector, websearch_to_tsquery('english', $2)) DESC) as rank
         FROM markdown_chunks
         WHERE search_vector @@ websearch_to_tsquery('english', $2) ${repoFilter}
         LIMIT $4
       ),
       keyword_search AS (
-        SELECT id, row_number() OVER (ORDER BY ts_rank_cd(search_vector_simple, websearch_to_tsquery('simple', $2)) DESC) as rank
+        SELECT id, row_number() OVER (ORDER BY ts_rank_cd('{0.1, 0.2, 1.0, 0.6}', search_vector_simple, websearch_to_tsquery('simple', $2)) DESC) as rank
         FROM markdown_chunks
         WHERE search_vector_simple @@ websearch_to_tsquery('simple', $2) ${repoFilter}
         LIMIT $4

@@ -1,93 +1,82 @@
-# Vector Engine Details
+# Vector Engine Internals
 
-The `VectorEngine` class manages the lifecycle of document indexing and retrieval, supporting both local and distributed database backends.
+The `VectorEngine` class ([src/engine.ts](file:///home/andrecrjr/Documents/dev/mcps/raglike-md/src/engine.ts)) manages document ingestion, structured chunking, vector embedding, and hybrid search retrieval.
 
-## Dual Database Architecture
-The engine dynamically selects its storage backend based on the environment:
-1. **External Postgres**: If `POSTGRES_URL` is set, the engine uses the `postgres.js` client to connect to an external database.
-2. **Local PGlite**: If running locally without a URL, it uses an embedded PGlite instance.
-3. **Docker Auto-Discovery**: When running in Docker, it defaults to the `db:5432` service if no `POSTGRES_URL` is provided.
+---
 
-## Smart Chunking Strategy
-To provide precise context to AI models while maintaining continuity, the engine uses an advanced **Hierarchical Sliding Window with Context Slop** strategy:
+## 🏛 Dual Database Architecture
 
-1. **Hierarchical Breadcrumbs**: Unlike simple title-prepending, the engine now parses the full document structure iteratively. Every chunk is prefixed with its complete breadcrumb path (e.g., `H1 > H2 > H3 > H4`). This ensures that even deeply nested content retains its full semantic context when retrieved in isolation.
-2. **Context Slop (Boundary Enrichment)**: To prevent semantic fragmentation at chunk and section boundaries, we implement "Context Slop."
-   - The **last sentence** of the previous section is prepended to the first chunk of the current section.
-   - The **first sentence** of the following section is appended to the last chunk of the current section.
-   - This "semantic glue" allows the LLM to understand what preceded and what follows a specific retrieval, improving coherence.
-3. **Sliding Window**: Each section is divided into chunks of ~1000 characters with a 250-character overlap.
-4. **Natural Breaks**: The engine attempts to find natural breaks (periods or newlines) at the end of each window to keep chunks readable.
-5. **Metadata Tagging**: Each chunk is indexed with its `word_count` and `last_modified` timestamp, allowing for more advanced filtering and "sort by recent" query capabilities.
-6. **Noise Filtering**: Chunks shorter than 20 characters are automatically filtered out during ingestion to prevent extremely short, non-contextual results.
+The engine dynamically selects its backend based on availability:
+1.  **External Postgres**: If `POSTGRES_URL` is set, the engine uses the `postgres` driver to connect.
+2.  **Local PGlite**: If no URL is provided, it initiates an embedded, WASM-compiled PGlite instance storing data locally in the `./raglike_db` or `.db/` directory.
+3.  **HNSW Index**: On initialization, the engine creates an HNSW index on the `embedding` column using cosine distance to ensure sub-second search times. It configures the session-level parameters (`hnsw.ef_search = 100`) to maximize recall.
 
-## Embedding Model
-We use the **Xenova/all-mpnet-base-v2** model.
-- **Dimensions**: 768
-- **Runtime**: Local execution via `@xenova/transformers`.
-- **Normalization**: Vectors are normalized to ensure accurate cosine similarity measurements.
+---
 
-## Performance: Parallelism & Indexing
-- **Parallel Processing**: Ingestion uses a concurrency-limited parallel strategy to embed and index multiple files/chunks simultaneously, maximizing CPU utilization.
-- **Batch Inserts**: Chunks are collected and inserted into the database in bulk, minimizing transaction overhead.
-- **HNSW Acceleration**: A Hierarchical Navigable Small World (HNSW) index is automatically applied to the `embedding` column, enabling sub-second search performance even as the document count grows into the tens of thousands.
-- **Fast Restart**: On initialization, the engine checks for existing data. If found, auto-indexing is skipped.
+## ✂️ Hierarchical Markdown AST Chunking
 
-## Search Mechanism
-By default, the engine performs a high-performance **Pure Vector Search**. Users can optionally request **Hybrid Search (Reciprocal Rank Fusion)** if keyword and heading matches are required.
+Traditional chunking techniques split text based on a fixed character count, frequently splitting code snippets or losing structural context. `raglike-md` resolves this by parsing documents into an **Abstract Syntax Tree (AST)** using `mdast`:
+
+1.  **Section boundaries**: The engine splits documents strictly by Markdown headers (`#`, `##`, `###`), working directly with the AST nodes array (`Content[]`) rather than raw string representations.
+2.  **Code-Block AST Preservation**: Code blocks are processed as intact `code` AST nodes. This preserves formatting and prevents them from being split, even if they contain empty lines (double newlines).
+3.  **Context Bundling**: Code blocks are always force-bundled with their preceding explanatory block to ensure context. They are explicitly exempted from recursive character-based splitting (`RecursiveCharacterTextSplitter`), keeping the code snippet and its explanation together in a single chunk.
+4.  **Sliding Window**: Inside each section, non-code text blocks are chunked into windows of ~1000 characters with a 250-character overlap, splitting at natural text breaks when possible.
+5.  **Noise Filtering**: Any chunk containing fewer than 20 characters is discarded to prevent indexing short, non-informational strings.
+6.  **Hierarchical Breadcrumbs**: Every chunk is prefixed with its full heading ancestry path (e.g. `H1 > H2 > H3`). This ensures that even deeply nested content maintains structural context during isolated retrieval.
+7.  **Context Slop (Boundary Enrichment)**: To bridge sections, "Context Slop" is added:
+    *   The **last sentence** of the previous section is prepended to the first chunk of the current section.
+    *   The **first sentence** of the next section is appended to the last chunk of the current section.
+
+---
+
+## 🔍 Search Pipelines
+
+`raglike-md` supports two search strategies: Pure Vector Search and 4-way Hybrid Search.
 
 ### 1. Pure Vector Search (Default)
-Semantic search uses the negative inner product operator `<#>` (provided by `pgvector`) and `all-mpnet-base-v2` embeddings to find conceptual matches. 
-- **Normalized Embeddings**: Because the engine normalizes all embeddings at generation time (`normalize: true`), sorting by negative inner product `<#>` ASC is mathematically identical to sorting by cosine distance ASC (or cosine similarity DESC).
-- **Performance**: This bypasses complex SQL joins and full-text indexes, routing directly to the HNSW index on the `embedding` column for sub-second retrieval times.
-- **Tuned Search Recall**: We configure the session-level setting `hnsw.ef_search = 100` (up from default `40`) to ensure high recall/accuracy for the HNSW index.
+Translates the query string into a 768-dimensional normalized embedding using **Xenova/all-mpnet-base-v2** and queries the HNSW index using cosine similarity (via the negative inner product operator `<#>`).
 
-### 2. Hybrid Search (Optional)
-When requested (via the `hybrid` parameter), the engine runs a 4-way **Reciprocal Rank Fusion (RRF)** ranking system to balance semantic meaning with technical precision:
-1. **Semantic Search (Vector)**: The same HNSW vector lookup mentioned above.
-2. **English Text Search**: Uses Postgres `tsvector` with the `english` dictionary. Handles stemming (e.g., "searching" matches "search") and stop-words.
-3. **Simple Text Search (Literal)**: Uses the `simple` dictionary to find exact matches for technical terms, function names, or IDs.
-4. **Heading Literal Match**: A specialized signal that boosts chunks where the query appears directly in the document heading, prioritizing shorter, more exact heading matches.
+### 2. Hybrid Search (RRF)
+When `hybrid: true` is requested, the engine executes four distinct searches and fuses them using **Reciprocal Rank Fusion (RRF)**:
 
-These four signals are combined using the RRF algorithm, ensuring that documents appearing high in multiple lists (or exceptionally high in one) are prioritized.
+```mermaid
+graph TD
+    Q[Query] --> V[Vector Search]
+    Q --> ET[English Text Search]
+    Q --> ST[Simple Text Search]
+    Q --> HL[Heading Literal Match]
 
-## Repo Scoping & Multi-Tenancy
-The engine supports logical isolation and targeted retrieval through **Repo Scoping**. This is particularly useful for users managing multiple projects or organizations.
+    V -->|Weight: 1.8| RRF[Reciprocal Rank Fusion]
+    ET -->|Weight: 1.8| RRF
+    ST -->|Weight: 1.8| RRF
+    HL -->|Weight: 0.8| RRF
 
-### How it Works
-1. **Tagging**: When a document is indexed (either via the `/upload` endpoint or the `GitManager`), it can be associated with a `repository_id`.
-   - **Git Webhooks**: Automatically tag chunks with the repository's full name (e.g., `facebook-react`).
-   - **Direct Uploads**: Chunks are currently untagged (global scope) unless manually specified in the engine call.
-2. **Indexing**: The `repository_id` is stored as a first-class column in the `markdown_chunks` table.
-3. **Targeted Retrieval**: Both the REST API (`/search`) and MCP tools (`semantic_markdown_search`) accept a `repository` parameter.
-4. **Isolation**: When a scope is provided, the engine applies a hard filter (`WHERE repository_id = $ID`) at the database level for both vector and keyword search paths. This ensures that results are strictly contained within the requested project, reducing noise and increasing relevance.
-
-### Usage in Tools
-AI agents can use this to focus their research:
-```json
-{
-  "name": "semantic_markdown_search",
-  "arguments": {
-    "query": "how to configure auth",
-    "repository": "my-org-project-x"
-  }
-}
+    RRF --> Output[Fused Ranking]
 ```
 
-### Stage 2: Cross-Encoder Reranking
-For high-precision requirements, the engine supports an optional second stage of retrieval using a **Cross-Encoder** (`Xenova/bge-reranker-base`).
+*   **Vector Search (Weight: 1.8)**: Concept-based similarity search using the HNSW index (high priority).
+*   **English Text Search (Weight: 1.8)**: Stemmed keyword matching using the Postgres `english` dictionary. Configured with custom `ts_rank_cd` weights (`'{0.1, 0.2, 1.0, 0.6}'`) to prioritize body content matches over headings.
+*   **Simple Text Search (Weight: 1.8)**: Unstemmed, literal term matching using the `simple` dictionary. Prioritizes exact technical terms, functions, or variable names, configured with custom `ts_rank_cd` weights to favor body content.
+*   **Heading Literal Match (Weight: 0.8)**: Lowered search priority for matching words inside document headings, allowing body text matches to prevail.
+*   **Technical Boost**: If the query includes common technical terms or syntax patterns (e.g., `camelCase`, `dot.notation()`, `functionCall()`, `.extensions`), a **1.2x score multiplier** is applied to code block chunks.
 
-### How it Works
-While Stage 1 (Bi-Encoders) is fast because it compares pre-computed vectors, it can sometimes miss nuances in how a query relates to a specific document. The Cross-Encoder solves this by processing the **query and the candidate document together** in a single transformer pass. This allows the model to attend to the specific interactions between every word in the query and every word in the document.
+---
 
-### Performance & Latency Trade-offs
-Users will notice that enabling `rerank: true` is significantly slower (often 5x-10x) than standard search. This is due to several architectural factors:
+## 🏷 Multi-Repository Isolation
 
-1. **Computational Complexity**: Unlike vector search which is a simple mathematical dot product, a Cross-Encoder requires a full forward pass of a transformer model for **every single candidate**.
-2. **Candidate Expansion**: To ensure the reranker has a high-quality pool to work with, the engine automatically expands the initial retrieval limit to **50 candidates** (or `limit * 5`). Each of these 50 pairs must be processed by the model.
-3. **CPU-Bound Inference**: In most local environments, these models run on the CPU. While the embedding model (Stage 1) only runs once per query, the reranker runs $N$ times per query.
-4. **Batch Overhead**: Even with batching, processing 50 text-pairs through a BERT-scale model is a heavy operation compared to the sub-millisecond lookups of an HNSW index.
+For multi-project environments, the engine supports logical isolation:
+*   **Tagging**: When indexing via Git webhooks or specifying repo scopes, chunks are tagged with a `repository_id` column.
+*   **Scoping**: If a client provides a `repository` parameter during search, a hard SQL filter (`WHERE repository_id = $ID`) is enforced during Stage 1 retrieval, completely isolating results.
 
-**Recommendation**: Use reranking when precision is critical (e.g., answering complex technical questions) and standard hybrid search when speed is the priority.
+---
 
+## ⚡ Stage 2: Cross-Encoder Reranking
 
+When `rerank: true` is enabled, candidate chunks are processed along with the query through a secondary **Cross-Encoder** model (**Xenova/bge-reranker-base**).
+
+### Performance & Latency Trade-offs:
+Reranking significantly improves accuracy but increases latency (often by 5x-10x) because:
+*   **Inference Complexity**: Bi-encoders encode queries and documents independently. Cross-encoders require a joint forward pass of the transformer model for each query-document pair.
+*   **Candidate Expansion**: The engine automatically expands the initial candidate list to **50 chunks** (or `limit * 10`) to ensure high recall for the reranking step.
+*   **CPU Limitation**: In local environments, running 50 transformer passes sequentially on a CPU is computationally expensive.
+*   **Best Practice**: Enable reranking for high-precision, question-answering tasks and disable it for speed-critical search auto-completes.

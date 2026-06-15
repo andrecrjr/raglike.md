@@ -1,47 +1,55 @@
-# MCP Client Configuration Guide
+# MCP Client Setup Guide
 
-`raglike-md` is optimized for **SSE (Server-Sent Events)** over HTTP, allowing you to run the search engine in a **Docker container**. This ensures a consistent environment and easy remote access for your AI tools.
+`raglike-md` implements the Model Context Protocol (MCP). It is optimized to run over HTTP using **Server-Sent Events (SSE)** inside a Docker container, providing remote access to your IDEs and development agents.
 
-## Recommended Transport: SSE via Docker
+---
 
-While `raglike-md` supports local Stdio, we recommend using Docker for better isolation and ease of setup.
+## 🐋 Starting the Server via Docker (Recommended)
 
-### Step 1: Start the Docker Container
-Run the following command to start the MCP server with HTTP/SSE enabled:
+To run `raglike-md` in Docker with MCP enabled:
 
 ```bash
 docker run -d \
   -p 4321:4321 \
   -e ENABLE_API=true \
   -e ENABLE_MCP=true \
+  -e API_TOKEN=your_secure_auth_token \
   -v $(pwd)/docs:/app/docs \
+  -v $(pwd)/.repos:/app/.repos \
   raglike-md
 ```
 
-### Step 2: Configure your Client
-Use the unified endpoint: `http://localhost:4321/mcp`
+If you set `API_TOKEN`, remember that certain clients (like Cursor) must pass the token in their authorization headers.
 
 ---
 
 ## 1. Cursor (IDE)
 
-Cursor allows you to connect to remote MCP servers directly via the UI.
+Cursor connects to remote MCP servers over HTTP/SSE.
 
-1. Open **Settings** (`Cmd+,` or `Ctrl+,`).
-2. Navigate to **Features** > **MCP**.
-3. Click **"+ Add New MCP Server"**.
-4. **Configuration**:
-   - **Name**: `raglike-md`
-   - **Type**: `sse`
-   - **URL**: `http://localhost:4321/mcp`
+1.  Open **Settings** (`Cmd+,` or `Ctrl+,`).
+2.  Navigate to **Features** > **MCP**.
+3.  Click **"+ Add New MCP Server"**.
+4.  Configure as follows:
+    *   **Name**: `raglike-md`
+    *   **Type**: `sse`
+    *   **URL**: `http://localhost:4321/mcp`
+5.  If you have configured `API_TOKEN`:
+    *   Add a header: `Authorization` with value `Bearer your_secure_auth_token`
 
 ---
 
 ## 2. Claude Code (CLI)
 
-Add the `raglike-md` server to your global Claude Code configuration:
+Add the `raglike-md` server directly to your Claude Code instance using the CLI command:
 
 ```bash
+claude mcp add --transport sse raglike-md http://localhost:4321/mcp
+```
+
+If `API_TOKEN` is enabled on the server, configure it in your environment:
+```bash
+# Note: Claude Code automatically forwards authorization headers if configured
 claude mcp add --transport sse raglike-md http://localhost:4321/mcp
 ```
 
@@ -49,13 +57,14 @@ claude mcp add --transport sse raglike-md http://localhost:4321/mcp
 
 ## 3. Windsurf (IDE)
 
-Windsurf manages MCP servers via a global JSON file.
+Windsurf reads its MCP configurations from a static JSON configuration file.
 
-**Config File Location:**
-- **macOS/Linux**: `~/.codeium/windsurf/mcp_config.json`
-- **Windows**: `%USERPROFILE%\.codeium\windsurf\mcp_config.json`
+*   **Config Location**:
+    *   macOS/Linux: `~/.codeium/windsurf/mcp_config.json`
+    *   Windows: `%USERPROFILE%\.codeium\windsurf\mcp_config.json`
 
-**Configuration:**
+Add the server connection details inside the `mcpServers` object:
+
 ```json
 {
   "mcpServers": {
@@ -68,29 +77,47 @@ Windsurf manages MCP servers via a global JSON file.
 
 ---
 
-## 4. Cline / Roo Code (VS Code Extension)
+## 4. Roo Code / Cline (VS Code Extension)
 
-1. Open the Cline panel in VS Code.
-2. Click the **MCP Servers** icon (three stacked boxes).
-3. Select the **Remote Servers** tab.
-4. Click **"+ Add Remote Server"**.
-5. **Name**: `raglike-md`
-6. **URL**: `http://localhost:4321/mcp`
+1.  Open the extension settings panel.
+2.  Navigate to the **MCP Servers** dashboard tab.
+3.  Click **"+ Add Remote Server"**.
+4.  Configure:
+    *   **Name**: `raglike-md`
+    *   **URL**: `http://localhost:4321/mcp`
+    *   **Headers** (Optional): Add `{"Authorization": "Bearer your_secure_auth_token"}` if required.
+
+Alternatively, you can edit the extension configuration file (`~/.vscode/extensions/.../mcp_settings.json` or similar depending on the plugin) directly:
+
+```json
+{
+  "mcpServers": {
+    "raglike-md": {
+      "command": "bun",
+      "args": ["run", "src/index.ts", "--mcp"],
+      "cwd": "/path/to/raglike-md",
+      "env": {
+        "POSTGRES_URL": "postgres://user:pass@localhost:5432/raglike"
+      }
+    }
+  }
+}
+```
 
 ---
 
-## 5. Codex (OpenAI Coding Agent)
+## 5. Codex (Coding Agent)
 
-Codex uses a **TOML** configuration file, typically located at `~/.codex/config.toml`.
+Codex uses a **TOML** configuration file located at `~/.codex/config.toml`.
 
-**SSE Configuration (Recommended):**
+### SSE Configuration (Recommended)
 ```toml
 [mcp_servers.raglike]
 enabled = true
 url = "http://localhost:4321/mcp"
 ```
 
-**Stdio Configuration (Local):**
+### Stdio Configuration (Local Process)
 ```toml
 [mcp_servers.raglike]
 enabled = true
@@ -103,7 +130,7 @@ env = { ENABLE_MCP = "true" }
 
 ## 6. Antigravity
 
-Add `raglike-md` to your `mcp_servers.json` configuration:
+Configure your client settings by adding `raglike-md` to your `mcp_servers.json` configuration block:
 
 ```json
 {
@@ -117,11 +144,3 @@ Add `raglike-md` to your `mcp_servers.json` configuration:
   ]
 }
 ```
-
----
-
-## Troubleshooting
-
-- **Check Docker Logs**: `docker logs <container_id>` to ensure the server started correctly.
-- **Firewall/Network**: Ensure port `4321` is open and reachable by your IDE.
-- **SSE Connection**: Verify the endpoint is alive by visiting `http://localhost:4321/mcp` in your browser (it should show a session endpoint).

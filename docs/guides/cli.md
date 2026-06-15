@@ -1,101 +1,95 @@
-# raglike-cli 🛠️
+# CLI User Guide
 
-The `raglike-cli` is a high-performance terminal tool designed to synchronize your local Markdown and PDF documents with the `raglike-md` knowledge engine. It provides a simple, efficient way to keep your local knowledge bases up to date without manual uploads.
-
-## 🚀 Installation
-
-Since `raglike-cli` is built with Bun, you can install it globally or run it directly using `bun x`.
-
-### Zero-Install (Run with bun x)
-If you are in the project root, you can run the CLI without installing it:
-```bash
-bun x ./cli <directory>
-```
-
-### Global Installation
-```bash
-bun run install-cli
-# Now you can use raglike-cli from anywhere
-```
-
-### Manual Installation (if not using the root script)
-```bash
-bun install -g ./cli
-```
+`raglike-cli` is a high-performance terminal utility built to synchronize your local folders of Markdown files and PDF documents with your running `raglike-md` instance.
 
 ---
 
-## ⚙️ Configuration
+## 🚀 Installation & Invocation
 
-To avoid passing the server URL and API token on every command, you can use a `.raglike` configuration file.
+### 1. Zero-Install (On-demand execution)
+If you are in the project root, you can run the CLI directly using Bun:
+```bash
+bun x ./cli <directory-to-sync>
+```
 
-### `.raglike` Config File
-Create a `.raglike` (JSON) file in your current working directory or your home directory (`~/.raglike`).
+### 2. Global Installation
+To install the tool globally so that it is available system-wide:
+```bash
+bun run install-cli
+```
+This builds and installs `raglike-cli` to your global Bun binary path.
+
+---
+
+## ⚙️ Configuration & Precedence
+
+To avoid typing the server URL and API tokens on every sync command, you can use persistent configuration files.
+
+### Configuration File (`.raglike`)
+Create a `.raglike` JSON file in either:
+1.  **Current Working Directory**: `./.raglike` (Project-specific)
+2.  **Home Directory**: `~/.raglike` (Global fallback)
 
 ```json
 {
   "server": "http://localhost:4321",
-  "token": "your_secure_token"
+  "token": "your_secure_api_token"
 }
 ```
 
-**Note:** If no configuration file is found, you **must** provide the `--server` or `--token` flags explicitly.
+### Resolution Order
+The CLI resolves configuration parameters in the following order:
+1.  **Command Line Flags** (e.g. `--server` or `--token` passed explicitly).
+2.  **Local Configuration**: `./.raglike` in the current working directory.
+3.  **Global Configuration**: `~/.raglike` in your home directory.
 
 ---
 
-## 📖 Usage
+## 📖 Usage Reference
 
-### Basic Sync
-Synchronize all `.md` and `.pdf` files in the current directory:
 ```bash
+raglike-cli <path-to-folder> [options]
+```
+
+### Parameters & Options:
+*   `<path-to-folder>`: Relative or absolute path to the directory containing documents to sync.
+*   `-s, --server <url>`: The target `raglike-md` HTTP server URL (overrides config).
+*   `-t, --token <token>`: Bearer authorization token (overrides config).
+*   `-h, --help`: Displays CLI help details.
+
+### Syncing Examples:
+```bash
+# Sync current directory using defaults or .raglike file
 raglike-cli .
-```
 
-### Custom Server & Token
-Override config file settings or run without a config file:
-```bash
-raglike-cli ./my-docs --server http://rag.example.com --token my_secret_token
+# Sync specific directory to a custom server
+raglike-cli ./notes -s http://192.168.1.100:4321 -t my_secret_token
 ```
-
-### Options
-| Flag | Short | Description |
-| :--- | :--- | :--- |
-| `--server` | `-s` | The URL of your `raglike-md` server. |
-| `--token` | `-t` | Your API Bearer token. |
-| `--help` | `-h` | Show the help message. |
 
 ---
 
-## 🔄 How it Works
+## 🔄 How Syncing Works (Delta Sync)
 
-1. **Discovery:** Recursively scans the target directory for supported file types (`.md`, `.pdf`).
-2. **Delta Sync:** Fetches the current state from the server via `GET /list-docs`.
-3. **Comparison:** Only uploads files that are either missing from the server or have a different file size.
-4. **Fast Upload:** Uses `multipart/form-data` to send the documents to the engine for immediate indexing.
+To optimize network performance and keep indexing times low, the CLI performs a **Delta Sync** instead of bulk-uploading all files:
 
-## 📦 Publishing to npm (For Maintainers)
-
-If you want to make `raglike-cli` available globally via `bun x`, follow these steps to publish the `cli/` subdirectory as a standalone package.
-
-1. **Change into the CLI directory:**
-   ```bash
-   cd cli
-   ```
-
-2. **Login to npm (if not already):**
-   ```bash
-   bunx npm login
-   ```
-
-3. **Check the package name:**
-   Ensure the `"name"` in `cli/package.json` is unique. If `raglike-cli` is already taken, you might want to use a scoped name like `@your-username/raglike-cli`.
-
-4. **Publish:**
-   ```bash
-   bun publish
-   ```
-
-Once published, users can run it instantly:
-```bash
-bun x raglike-cli ./my-docs
+```mermaid
+flowchart TD
+    A[Scan Local Directory] -->|Find .md & .pdf| B[List Files]
+    B --> C[Fetch Remote State GET /list-docs]
+    C --> D{File Exists on Server?}
+    D -->|No| E[Mark for Upload]
+    D -->|Yes| F{Size Matches Remote?}
+    F -->|No| E
+    F -->|Yes| G[Skip File]
+    E --> H[Upload marked files via POST /upload]
+    G --> I[Sync Finished]
+    H --> I
 ```
+
+1.  **Discovery**: Recursively scans the target directory, discovering all files ending with `.md` or `.pdf`.
+2.  **State Retrieval**: Queries the remote `raglike-md` server via `GET /list-docs` to retrieve metadata (file path, last modified date, and size) of all currently indexed documents.
+3.  **Delta Calculation**: Compares each local file against the remote list:
+    *   If a file does not exist on the server, it is queued for upload.
+    *   If a file exists but its local file size differs from the remote file size, it is queued for upload.
+    *   Otherwise, it is skipped.
+4.  **Upload & Ingest**: Transmits all queued files in parallel using `multipart/form-data` to the `/upload` endpoint. The server indexes them immediately.

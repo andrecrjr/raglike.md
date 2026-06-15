@@ -122,4 +122,18 @@ Content for section B.
 		// Verify it wasn't truncated (at least checked by one of the repetitions)
 		expect(codeChunk?.content.split("\n").length).toBeGreaterThan(50);
 	}, 30000);
+
+	test("Should preserve code blocks containing double newlines without breaking them in half", async () => {
+		const content = `# Code Double Newline Test\n\nBefore code block.\n\n\`\`\`ts\nconst x = 5;\n\nconst y = 10;\n\`\`\`\n\nAfter code block.`;
+		fs.writeFileSync(path.join(mockDocsDir, "double-newline-code.md"), content);
+
+		await engine.indexDirectory(mockDocsDir);
+
+		const results = await engine.search("const y = 10", 5);
+		expect(results.length).toBeGreaterThan(0);
+
+		const codeChunk = results.find((r) => r.content.includes("const x = 5"));
+		expect(codeChunk).toBeDefined();
+		expect(codeChunk?.content).toContain("const x = 5;\n\nconst y = 10;");
+	}, 30000);
 });
