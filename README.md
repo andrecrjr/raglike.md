@@ -118,7 +118,15 @@ Retrieve the full raw markdown content of a file.
   "repository": "my-org-project"
 }
 ```
-*Requires Header: `Authorization: Bearer <API_TOKEN>`*
+
+### Generate Embeddings
+`POST /api/v1/embeddings`
+```json
+{
+  "texts": ["Hello world", "Semantic intelligence"]
+}
+```
+*Returns `{"success": true, "embeddings": [[...], [...]]}`*
 
 ---
 
@@ -132,6 +140,8 @@ bun run src/index.ts --mcp
 ### Environment Variables
 - `API_TOKEN`: Secure your MCP/REST endpoints.
 - `WEBHOOK_SECRET`: Secure your Git ingestion pipeline.
+- `API_EMBEDDING_URL`: (Optional) Offload embedding generation to an external API.
+- `API_EMBEDDING_TOKEN`: (Optional) Bearer token for the external embedding API.
 - `POSTGRES_URL`: (Optional) Use an external Postgres instance.
 
 ---

@@ -537,7 +537,16 @@ export class VectorEngine {
 		return relativePath;
 	}
 
+	async getPublicEmbeddings(texts: string[]): Promise<number[][]> {
+		return this.getEmbeddingsBatch(texts);
+	}
+
 	private async getEmbeddingsBatch(texts: string[]): Promise<number[][]> {
+		const apiUrl = process.env.API_EMBEDDING_URL;
+		if (apiUrl) {
+			return this.fetchExternalEmbeddings(texts, apiUrl);
+		}
+
 		if (!this.extractor) throw new Error("Extractor not initialized.");
 
 		// Handle empty case
@@ -549,6 +558,46 @@ export class VectorEngine {
 		});
 
 		return this.sliceBatchOutput(output as TransformerOutput, texts.length);
+	}
+
+	private async fetchExternalEmbeddings(
+		texts: string[],
+		url: string,
+	): Promise<number[][]> {
+		if (texts.length === 0) return [];
+
+		try {
+			const response = await fetch(url, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: process.env.API_EMBEDDING_TOKEN
+						? `Bearer ${process.env.API_EMBEDDING_TOKEN}`
+						: "",
+				},
+				body: JSON.stringify({ texts }),
+			});
+
+			if (!response.ok) {
+				const errorText = await response.text();
+				throw new Error(
+					`External embedding API failed: ${response.status} ${errorText}`,
+				);
+			}
+
+			const result = (await response.json()) as { embeddings: number[][] };
+			if (!result.embeddings || !Array.isArray(result.embeddings)) {
+				throw new Error("Invalid response format from external embedding API");
+			}
+
+			return result.embeddings;
+		} catch (error) {
+			logger.error(
+				{ error, url },
+				"Failed to fetch embeddings from external API",
+			);
+			throw error;
+		}
 	}
 
 	private sliceBatchOutput(
@@ -624,7 +673,8 @@ export class VectorEngine {
 	}
 
 	private async semanticSubSplit(text: string): Promise<string[]> {
-		if (!this.splitterExtractor) return [text];
+		const apiUrl = process.env.API_EMBEDDING_URL;
+		if (!this.splitterExtractor && !apiUrl) return [text];
 
 		// Split by blocks (double newlines) to preserve Markdown structure
 		const blocks = text
@@ -634,17 +684,25 @@ export class VectorEngine {
 		if (blocks.length <= 1) return [text];
 
 		// Batch embedding for all blocks
-		const output = await this.splitterExtractor(blocks, {
-			pooling: "mean",
-			normalize: true,
-		});
+		let vectors: Float32Array[] = [];
 
-		// Use dynamic dimension detection based on data length and batch size
-		const data = (output as TransformerOutput).data;
-		const dimension = data.length / blocks.length;
-		const vectors: Float32Array[] = [];
-		for (let i = 0; i < blocks.length; i++) {
-			vectors.push(data.slice(i * dimension, (i + 1) * dimension));
+		if (apiUrl) {
+			const embeddings = await this.fetchExternalEmbeddings(blocks, apiUrl);
+			vectors = embeddings.map((v) => new Float32Array(v));
+		} else if (this.splitterExtractor) {
+			const output = await this.splitterExtractor(blocks, {
+				pooling: "mean",
+				normalize: true,
+			});
+
+			// Use dynamic dimension detection based on data length and batch size
+			const data = (output as TransformerOutput).data;
+			const dimension = data.length / blocks.length;
+			for (let i = 0; i < blocks.length; i++) {
+				vectors.push(data.slice(i * dimension, (i + 1) * dimension));
+			}
+		} else {
+			return [text];
 		}
 
 		const chunks: string[] = [];
@@ -690,6 +748,12 @@ export class VectorEngine {
 	}
 
 	private async getEmbedding(text: string): Promise<number[]> {
+		const apiUrl = process.env.API_EMBEDDING_URL;
+		if (apiUrl) {
+			const results = await this.fetchExternalEmbeddings([text], apiUrl);
+			return results[0];
+		}
+
 		if (!this.extractor) throw new Error("Extractor not initialized.");
 		const output = (await this.extractor(text, {
 			pooling: "mean",

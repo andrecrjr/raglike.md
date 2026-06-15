@@ -17,7 +17,7 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
 ## Engine & Search Logic
 
 ### 1. Models
-- **Embeddings:** `Xenova/all-mpnet-base-v2` (768-dimensional).
+- **Embeddings:** `Xenova/all-mpnet-base-v2` (768-dimensional) or external API via `API_EMBEDDING_URL`.
 - **Metric:** Cosine Similarity (`vector_cosine_ops` in pgvector).
 - **Reranking:** `Xenova/bge-reranker-base` (Cross-Encoder).
 

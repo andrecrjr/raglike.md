@@ -218,6 +218,24 @@ export async function startHttpServer(engine: VectorEngine) {
 				}
 			}
 
+			// Embeddings
+			if (req.method === "POST" && url.pathname === "/api/v1/embeddings") {
+				try {
+					const body = (await req.json()) as { texts: string[] };
+					if (!body.texts || !Array.isArray(body.texts)) {
+						return Response.json(
+							{ error: "Invalid request. 'texts' array is required." },
+							{ status: 400 },
+						);
+					}
+					const embeddings = await engine.getPublicEmbeddings(body.texts);
+					return Response.json({ success: true, embeddings });
+				} catch (err) {
+					logger.error(err, "Embeddings generation error");
+					return Response.json({ error: String(err) }, { status: 500 });
+				}
+			}
+
 			// Upload
 			if (req.method === "POST" && url.pathname === "/upload") {
 				try {
