@@ -19,11 +19,8 @@ services:
     build: .
     ports:
       - "4321:4321"
-    environment:
-      - ENABLE_API=true
-      - ENABLE_MCP=true
-      - API_TOKEN=raglike_master_token_2026
-      - WEBHOOK_SECRET=raglike_webhook_secret_2026
+    env_file:
+      - .env.local
     depends_on:
       db:
         condition: service_healthy
