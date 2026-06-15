@@ -84,6 +84,7 @@
             <div class="flex items-center gap-2 md:gap-4">
                 <button type="button" onclick="toggleSidebar()" class="md:hidden p-2 text-slate-500 hover:bg-slate-50 rounded-lg" title="Toggle Menu">
                     <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <title>Menu Toggle Icon</title>
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
                     </svg>
                 </button>
@@ -211,6 +212,7 @@
                                 >
                                     <span class="hidden md:inline">Fetch Context</span>
                                     <svg class="w-5 h-5 md:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <title>Search Submit Icon</title>
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                                     </svg>
                                     <kbd class="hidden lg:inline-flex items-center h-6 px-2 font-sans text-[10px] font-bold text-indigo-200 border border-indigo-500 rounded-lg bg-indigo-500">⏎</kbd>
@@ -417,7 +419,7 @@
 
         function getAuthHeaders(headers = {}) {
             if (window.API_TOKEN) {
-                headers['Authorization'] = `Bearer ${window.API_TOKEN}`;
+                headers.Authorization = `Bearer ${window.API_TOKEN}`;
             }
             return headers;
         }
@@ -549,7 +551,7 @@
             }
         }
 
-        function clearSearch() {
+        function _clearSearch() {
             resultsArea.classList.add('hidden');
             searchWelcome.classList.remove('hidden');
             searchInput.value = '';
@@ -557,7 +559,7 @@
             resultCountLabel.innerText = `0 Matches`;
         }
 
-        async function deleteDoc(path) {
+        async function _deleteDoc(path) {
             if (!confirm(`Permanently decommission and purge technical asset: ${path.split('/').pop()}?`)) return;
             
             try {
@@ -685,20 +687,31 @@
             }
         });
 
-        async function viewFullDoc(path) {
+        async function _viewFullDoc(path) {
             try {
+                console.log(`Attempting to read document: ${path}`);
                 const res = await fetch(`/read?path=${encodeURIComponent(path)}`, {
                     headers: getAuthHeaders()
                 });
+                
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({ error: res.statusText }));
+                    throw new Error(errData.error || `HTTP error ${res.status}`);
+                }
+
                 const data = await res.json();
                 if (data.success) {
                     document.getElementById('modalTitle').innerText = path.split('/').pop();
                     document.getElementById('modalPath').innerText = path;
                     document.getElementById('rawContent').innerText = data.content;
                     modal.classList.remove('hidden');
+                    console.log('Modal opened successfully');
+                } else {
+                    throw new Error(data.error || 'Unknown error occurred');
                 }
-            } catch (_err) {
-                alert('Source inspection protocols offline.');
+            } catch (err) {
+                console.error('Modal open error:', err);
+                alert(`Source inspection failure: ${err.message}`);
             }
         }
 

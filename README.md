@@ -22,7 +22,7 @@ Most RAG systems use generic character-based chunking that breaks context. `ragl
 
 ## ✨ Key Features
 
-- **Hybrid Search (Vector + Full-Text):** Combines conceptual similarity (pgvector) with exact keyword matching (tsvector).
+- **4-way Hybrid Search:** Combines conceptual similarity (pgvector), English keyword matching (stemmed), literal matching (non-stemmed), and literal heading boosts using RRF.
 - **Cross-Encoder Reranking:** Secondary pass using `bge-reranker-base` for ultra-high precision.
 - **Secure & Team-Ready:** Bearer Token authentication and Webhook signature validation.
 - **HNSW Acceleration:** Sub-second searches across massive datasets.

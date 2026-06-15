@@ -16,10 +16,10 @@ To provide precise context to AI models while maintaining continuity, the engine
    - The **last sentence** of the previous section is prepended to the first chunk of the current section.
    - The **first sentence** of the following section is appended to the last chunk of the current section.
    - This "semantic glue" allows the LLM to understand what preceded and what follows a specific retrieval, improving coherence.
-3. **Sliding Window**: Each section is divided into chunks of ~600 characters with a 120-character overlap.
+3. **Sliding Window**: Each section is divided into chunks of ~1000 characters with a 250-character overlap.
 4. **Natural Breaks**: The engine attempts to find natural breaks (periods or newlines) at the end of each window to keep chunks readable.
 5. **Metadata Tagging**: Each chunk is indexed with its `word_count` and `last_modified` timestamp, allowing for more advanced filtering and "sort by recent" query capabilities.
-6. **Filtering**: Chunks shorter than 5 characters (previously 50) are now indexed to ensure short but critical technical data is searchable.
+6. **Noise Filtering**: Chunks shorter than 20 characters are automatically filtered out during ingestion to prevent extremely short, non-contextual results.
 
 ## Embedding Model
 We use the **Xenova/all-mpnet-base-v2** model.
@@ -33,11 +33,23 @@ We use the **Xenova/all-mpnet-base-v2** model.
 - **HNSW Acceleration**: A Hierarchical Navigable Small World (HNSW) index is automatically applied to the `embedding` column, enabling sub-second search performance even as the document count grows into the tens of thousands.
 - **Fast Restart**: On initialization, the engine checks for existing data. If found, auto-indexing is skipped.
 
-## Hybrid Search Mechanism
-Search is performed using a multi-signal ranking system:
-1. **Semantic Search**: Uses the cosine distance operator `<=>` (provided by `pgvector`) to find conceptual matches.
-2. **Full-Text Search**: Uses Postgres `tsvector` and `ts_rank_cd` with a GIN index to find exact keyword matches (e.g., function names, error codes).
-3. **Reciprocal Rank Fusion (RRF)**: Results from both vector and keyword searches are combined using the RRF algorithm. This provides a more robust and precise ranking by rewarding documents that appear in both result sets, ensuring that technical specificity and semantic meaning are perfectly balanced.
+## Search Mechanism
+By default, the engine performs a high-performance **Pure Vector Search**. Users can optionally request **Hybrid Search (Reciprocal Rank Fusion)** if keyword and heading matches are required.
+
+### 1. Pure Vector Search (Default)
+Semantic search uses the negative inner product operator `<#>` (provided by `pgvector`) and `all-mpnet-base-v2` embeddings to find conceptual matches. 
+- **Normalized Embeddings**: Because the engine normalizes all embeddings at generation time (`normalize: true`), sorting by negative inner product `<#>` ASC is mathematically identical to sorting by cosine distance ASC (or cosine similarity DESC).
+- **Performance**: This bypasses complex SQL joins and full-text indexes, routing directly to the HNSW index on the `embedding` column for sub-second retrieval times.
+- **Tuned Search Recall**: We configure the session-level setting `hnsw.ef_search = 100` (up from default `40`) to ensure high recall/accuracy for the HNSW index.
+
+### 2. Hybrid Search (Optional)
+When requested (via the `hybrid` parameter), the engine runs a 4-way **Reciprocal Rank Fusion (RRF)** ranking system to balance semantic meaning with technical precision:
+1. **Semantic Search (Vector)**: The same HNSW vector lookup mentioned above.
+2. **English Text Search**: Uses Postgres `tsvector` with the `english` dictionary. Handles stemming (e.g., "searching" matches "search") and stop-words.
+3. **Simple Text Search (Literal)**: Uses the `simple` dictionary to find exact matches for technical terms, function names, or IDs.
+4. **Heading Literal Match**: A specialized signal that boosts chunks where the query appears directly in the document heading, prioritizing shorter, more exact heading matches.
+
+These four signals are combined using the RRF algorithm, ensuring that documents appearing high in multiple lists (or exceptionally high in one) are prioritized.
 
 ## Repo Scoping & Multi-Tenancy
 The engine supports logical isolation and targeted retrieval through **Repo Scoping**. This is particularly useful for users managing multiple projects or organizations.

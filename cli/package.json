@@ -1,13 +1,13 @@
 {
-  "name": "raglike@cli",
-  "version": "0.1.0",
-  "description": "Sync CLI for raglike-md",
-  "main": "index.ts",
-  "type": "module",
-  "bin": {
-    "raglike-cli": "./index.ts"
-  },
-  "devDependencies": {
-    "@types/bun": "latest"
-  }
+	"name": "raglike@cli",
+	"version": "0.1.0",
+	"description": "Sync CLI for raglike-md",
+	"main": "index.ts",
+	"type": "module",
+	"bin": {
+		"raglike-cli": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "latest"
+	}
 }

@@ -41,6 +41,12 @@ export function createMcpServer(engine: VectorEngine) {
 							type: "string",
 							description: "Optional repository ID to scope the search.",
 						},
+						hybrid: {
+							type: "boolean",
+							default: false,
+							description:
+								"Whether to perform hybrid search using Reciprocal Rank Fusion (RRF) combining vector and keyword searches (default: false).",
+						},
 					},
 					required: ["query"],
 				},
@@ -81,29 +87,54 @@ export function createMcpServer(engine: VectorEngine) {
 	}));
 
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
+		logger.info(
+			{ tool: req.params.name, arguments: req.params.arguments },
+			"MCP Tool call",
+		);
 		if (req.params.name === "semantic_markdown_search") {
-			const query = String(req.params.arguments?.query || "");
-			const limit = Number(req.params.arguments?.limit || 3);
-			const rerank = Boolean(req.params.arguments?.rerank || false);
-			const repository = req.params.arguments?.repository
-				? String(req.params.arguments.repository)
-				: undefined;
+			try {
+				const query = String(req.params.arguments?.query || "");
+				const limit = Number(req.params.arguments?.limit || 3);
+				const rerank = Boolean(req.params.arguments?.rerank || false);
+				const repository = req.params.arguments?.repository
+					? String(req.params.arguments.repository)
+					: undefined;
+				const hybrid = Boolean(req.params.arguments?.hybrid || false);
 
-			const matches = await engine.search(query, limit, rerank, repository);
-			const output = matches
-				.map((m) => {
-					const scoreLabel = rerank ? "Rerank Score" : "Distance";
-					const scoreValue = rerank
-						? (m.rerank_score ?? 0).toFixed(4)
-						: m.distance.toFixed(4);
-					const repoInfo = m.repository_id
-						? ` Repo: \`${m.repository_id}\``
-						: "";
-					return `### ID: [${m.id}] File: \`${m.file_path}\`${repoInfo} > \`${m.heading}\` (${scoreLabel}: ${scoreValue})\n---\n${m.content}\n---\n`;
-				})
-				.join("\n");
+				const matches = await engine.search(
+					query,
+					limit,
+					rerank,
+					repository,
+					hybrid,
+				);
+				const output = matches
+					.map((m) => {
+						const scoreLabel = rerank
+							? "Rerank Score"
+							: hybrid
+								? "RRF Score / Dist"
+								: "Similarity / Dist";
+						const scoreValue = rerank
+							? (m.rerank_score ?? 0).toFixed(4)
+							: `${(m.rrf_score ?? 0).toFixed(4)} / ${(m.distance ?? 0).toFixed(4)}`;
+						const repoInfo = m.repository_id
+							? ` Repo: \`${m.repository_id}\``
+							: "";
+						return `### ID: [${m.id}] File: \`${m.file_path}\`${repoInfo} > \`${m.heading}\` (${scoreLabel}: ${scoreValue})\n---\n${m.content}\n---\n`;
+					})
+					.join("\n");
 
-			return { content: [{ type: "text", text: output }] };
+				return { content: [{ type: "text", text: output }] };
+			} catch (err) {
+				logger.error(err, "MCP Search error");
+				return {
+					content: [
+						{ type: "text", text: `Error during search: ${String(err)}` },
+					],
+					isError: true,
+				};
+			}
 		}
 
 		if (req.params.name === "read_chunk_neighbors") {

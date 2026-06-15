@@ -38,6 +38,10 @@ export async function startHttpServer(engine: VectorEngine) {
 		idleTimeout: 0,
 		async fetch(req) {
 			const url = new URL(req.url);
+			logger.info(
+				{ method: req.method, path: url.pathname },
+				"Incoming request",
+			);
 
 			// Security: Bearer Token Auth
 			const authToken = process.env.API_TOKEN;
@@ -198,12 +202,14 @@ export async function startHttpServer(engine: VectorEngine) {
 						limit?: number;
 						rerank?: boolean;
 						repository?: string;
+						hybrid?: boolean;
 					};
 					const results = await engine.search(
 						body.query,
 						body.limit || 3,
 						body.rerank || false,
 						body.repository,
+						body.hybrid || false,
 					);
 					return Response.json({ success: true, results });
 				} catch (err) {
@@ -226,9 +232,15 @@ export async function startHttpServer(engine: VectorEngine) {
 					const targetPath = path.join(targetDir, file.name);
 					await Bun.write(targetPath, buffer);
 
-					await engine.indexSingleFile(path.resolve(process.cwd(), targetPath));
-					return Response.json({ success: true, path: targetPath });
+					const finalPath = await engine.indexSingleFile(
+						path.resolve(process.cwd(), targetPath),
+					);
+					return Response.json({
+						success: true,
+						path: finalPath || targetPath,
+					});
 				} catch (err) {
+					logger.error(err, "Upload processing error");
 					return Response.json({ error: String(err) }, { status: 500 });
 				}
 			}

@@ -7,9 +7,9 @@ This project is a semantic document retrieval system that indexes markdown files
 ### 1. Vector Engine (`src/engine.ts`)
 The heart of the system. It handles:
 - **Dual Database Support**: Automatically switches between local **PGlite** (with disk persistence in `./.db`) and external **Postgres** (via `POSTGRES_URL`).
-- **Smart Chunking**: Splits documents by headers and then into overlapping chunks (~600 chars) to preserve context. Each chunk is indexed with its hierarchical context (H1 > Heading).
+- **Smart Chunking**: Splits documents by headers and then into overlapping chunks (~1000 chars) to preserve context. Chunks under 20 characters are filtered out. Each chunk is indexed with its hierarchical context (H1 > Heading).
 - **Embedding Generation**: Uses `@xenova/transformers` with the `all-mpnet-base-v2` model to generate 768-dimensional vectors locally.
-- **Hybrid Search**: Combines semantic similarity (pgvector) with keyword ranking (tsvector) for precise results.
+- **Hybrid Search**: Uses a 4-way **Reciprocal Rank Fusion (RRF)** strategy, combining semantic similarity, English keyword matching, literal term matching (non-stemmed), and specialized heading boosts.
 - **Cross-Encoder Reranking**: Optional second-stage retrieval using `bge-reranker-base` to refine search results for maximum accuracy.
 
 ### 2. MCP Server (`src/mcp.ts`)

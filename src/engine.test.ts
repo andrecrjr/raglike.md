@@ -5,12 +5,25 @@ import {
 	beforeEach,
 	describe,
 	expect,
+	mock,
 	test,
 } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { VectorEngine } from "./engine";
+import type { MarkdownChunk, VectorEngine } from "./engine";
 import { getTestEngine, truncateTables } from "./test-utils";
+
+// Mock pdf2md-ts for PDF testing
+mock.module("pdf2md-ts", () => {
+	return {
+		default: async (_buffer: Buffer) => {
+			return [
+				"# Page 1\nContent from page 1 is long enough to pass the threshold.",
+				'# Page 2\nContent from page 2 with data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\n![alt text](https://example.com/image.png)\n<img src="https://example.com/other.jpg">',
+			];
+		},
+	};
+});
 
 describe("PGlite Vector Search Engine Core", () => {
 	let engine: VectorEngine;
@@ -38,7 +51,6 @@ describe("PGlite Vector Search Engine Core", () => {
 			fs.rmSync(mockDocsDir, { recursive: true, force: true });
 		}
 	});
-
 
 	test("Should recursively ingest nested folder layers and retrieve items semantically", async () => {
 		const nestedDir = path.join(mockDocsDir, "a", "b", "c");
@@ -81,23 +93,28 @@ describe("PGlite Vector Search Engine Core", () => {
 		await engine.indexDirectory(mockDocsDir);
 
 		// Get all chunks to be sure we have them
-		const all = await engine.query<{id: any, heading: string}>("SELECT id, heading FROM markdown_chunks ORDER BY id ASC", []);
-		console.log("Indexed chunks:", all.rows.map(r => `${r.id}: ${r.heading}`));
-		
-		const sectionB = all.rows.find(r => r.heading.includes("Section B"));
+		const all = await engine.query<{ id: string; heading: string }>(
+			"SELECT id, heading FROM markdown_chunks ORDER BY id ASC",
+			[],
+		);
+		console.log(
+			"Indexed chunks:",
+			all.rows.map((r) => `${r.id}: ${r.heading}`),
+		);
+
+		const sectionB = all.rows.find((r) => r.heading.includes("Section B"));
 		expect(sectionB).toBeDefined();
-		const chunkId = Number(sectionB!.id);
+		const chunkId = Number(sectionB?.id);
 
 		const neighbors = await engine.getChunkNeighbors(chunkId);
 
 		expect(neighbors).not.toBeNull();
 		expect(neighbors?.previous).not.toBeNull();
 		expect(neighbors?.next).not.toBeNull();
-		
+
 		expect(neighbors?.previous?.heading).toContain("Section A");
 		expect(neighbors?.next?.heading).toContain("Section C");
 	}, 30000);
-
 
 	test("Should filter out base64 image data during ingestion", async () => {
 		const base64Content =
@@ -116,7 +133,7 @@ describe("PGlite Vector Search Engine Core", () => {
 		expect(matches[0].content).toContain("This text should be indexed.");
 	}, 30000);
 
-	test("Should prioritize keyword matches in headings (Weighted Search)", async () => {
+	test("Should prioritize keyword matches in headings (Weighted Search - Hybrid)", async () => {
 		fs.writeFileSync(
 			path.join(mockDocsDir, "weighted1.md"),
 			"# UniqueTitleKeyword\nThis is some filler content.",
@@ -128,12 +145,40 @@ describe("PGlite Vector Search Engine Core", () => {
 
 		await engine.indexDirectory(mockDocsDir);
 
-		// Keyword in heading (Weight A) should rank higher than content (Weight B)
-		const matches = await engine.search("UniqueTitleKeyword", 2);
+		// Keyword in heading (Weight A) should rank higher than content (Weight B) when using hybrid search
+		const matches = await engine.search(
+			"UniqueTitleKeyword",
+			2,
+			false,
+			undefined,
+			true,
+		);
 		expect(matches.length).toBe(2);
 		expect(matches[0].heading).toBe("UniqueTitleKeyword");
 	}, 30000);
 
+	test("Should perform pure vector search by default", async () => {
+		fs.writeFileSync(
+			path.join(mockDocsDir, "vector1.md"),
+			"# Quantum Mechanics\nEntanglement is a physical phenomenon that occurs when a pair or group of particles are generated, interact, or share spatial proximity.",
+		);
+		fs.writeFileSync(
+			path.join(mockDocsDir, "vector2.md"),
+			"# Baking Bread\nTo bake delicious bread you need flour, water, salt, and yeast. Mix them together and let the dough rise before placing in the oven.",
+		);
+
+		await engine.indexDirectory(mockDocsDir);
+
+		// Vector-only search (default) should find the semantic match for physics concepts
+		const matches = await engine.search(
+			"subatomic particles and entanglement",
+			1,
+		);
+		expect(matches.length).toBe(1);
+		expect(matches[0].heading).toBe("Quantum Mechanics");
+		expect(matches[0].distance).toBeGreaterThan(0.0);
+		expect(matches[0].rrf_score).toBe(matches[0].distance); // In vector-only mode, rrf_score maps to distance
+	}, 30000);
 
 	test("Should apply cross-encoder reranking and return rerank_score", async () => {
 		fs.writeFileSync(
@@ -153,4 +198,70 @@ describe("PGlite Vector Search Engine Core", () => {
 			results[1].rerank_score || 0,
 		);
 	}, 60000);
+
+	test("Should read document content correctly", async () => {
+		const filePath = path.join(mockDocsDir, "read-test.md");
+		const content = "# Read Test\nHello World";
+		fs.writeFileSync(filePath, content);
+
+		const relativePath = path.relative(process.cwd(), filePath);
+		const readContent = await engine.readDocument(relativePath);
+		expect(readContent).toBe(content);
+	});
+
+	test("Should remove document from database", async () => {
+		const filePath = path.join(mockDocsDir, "remove-test.md");
+		fs.writeFileSync(filePath, "# Remove Test\nThis is content to be removed.");
+
+		await engine.indexSingleFile(filePath);
+
+		const relativePath = path.relative(process.cwd(), filePath);
+		const initialCount = await engine.query(
+			"SELECT COUNT(*) FROM markdown_chunks WHERE file_path = $1",
+			[relativePath],
+		);
+		expect(Number(initialCount.rows[0].count)).toBeGreaterThan(0);
+
+		await engine.removeDocument(relativePath);
+
+		const finalCount = await engine.query(
+			"SELECT COUNT(*) FROM markdown_chunks WHERE file_path = $1",
+			[relativePath],
+		);
+		expect(Number(finalCount.rows[0].count)).toBe(0);
+	});
+
+	test("Should correctly ingest PDF files by replacing with markdown and stripping images", async () => {
+		const pdfPath = path.join(mockDocsDir, "test.pdf");
+		const mdPath = path.join(mockDocsDir, "test.md");
+		fs.writeFileSync(pdfPath, "dummy pdf content");
+
+		await engine.indexDirectory(mockDocsDir);
+
+		// PDF should be gone, MD should exist
+		expect(fs.existsSync(pdfPath)).toBe(false);
+		expect(fs.existsSync(mdPath)).toBe(true);
+
+		const matches = await engine.search("Content from page", 5);
+		expect(matches.length).toBeGreaterThan(1);
+		expect(matches[0].file_path).toContain("test.md");
+
+		const allContent = matches.map((m: MarkdownChunk) => m.content).join(" ");
+		expect(allContent).toContain("Content from page 1");
+		expect(allContent).toContain("Content from page 2");
+
+		// Check if base64 was stripped
+		expect(allContent).not.toContain(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
+		);
+		expect(allContent).toContain("[base64 image removed]");
+
+		// Check if Markdown and HTML images were stripped
+		expect(allContent).not.toContain(
+			"![alt text](https://example.com/image.png)",
+		);
+		expect(allContent).not.toContain(
+			'<img src="https://example.com/other.jpg">',
+		);
+	});
 });

@@ -9,7 +9,7 @@ import {
 	pipeline,
 } from "@huggingface/transformers";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import type { Content, Root } from "mdast";
+import type { Content } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { toMarkdown } from "mdast-util-to-markdown";
 import { toString as mdastToString } from "mdast-util-to-string";
@@ -26,7 +26,9 @@ type Extractor = (
 	options?: { pooling?: string; normalize?: boolean; dtype?: string },
 ) => Promise<TransformerOutput | TransformerOutput[]>;
 
-type RerankerModel = (inputs: any) => Promise<{ logits: { data: number[] } }>;
+type RerankerModel = (
+	inputs: Record<string, unknown>,
+) => Promise<{ logits: { data: number[] } }>;
 type RerankerTokenizer = (
 	queries: string[],
 	options: {
@@ -34,7 +36,7 @@ type RerankerTokenizer = (
 		padding: boolean;
 		truncation: boolean;
 	},
-) => Promise<any>;
+) => Promise<Record<string, unknown>>;
 
 export interface MarkdownChunk {
 	id: string;
@@ -174,15 +176,23 @@ export class VectorEngine {
 				// Patch vector extension to handle Bun's file:// URL stringification in tests
 				const patchedVector = {
 					...vector,
-					setup: async (pg: any, emscriptenOpts: any) => {
-						const result = await vector.setup(pg, emscriptenOpts);
+					setup: async (pg: PGlite, emscriptenOpts: unknown) => {
+						const result = await vector.setup(
+							pg,
+							emscriptenOpts as Parameters<typeof vector.setup>[1],
+						);
 						if (
 							result.bundlePath instanceof URL &&
 							result.bundlePath.protocol === "file:"
 						) {
 							// Use realpathSync to resolve any potential symlink issues and ensure plain path
-							const plainPath = fs.realpathSync(fileURLToPath(result.bundlePath));
-							logger.debug({ path: plainPath }, "PGlite vector bundle resolved");
+							const plainPath = fs.realpathSync(
+								fileURLToPath(result.bundlePath),
+							);
+							logger.debug(
+								{ path: plainPath },
+								"PGlite vector bundle resolved",
+							);
 							result.bundlePath = plainPath;
 						}
 						return result;
@@ -230,6 +240,14 @@ export class VectorEngine {
 
 	private async ensureSchema() {
 		await this.exec("CREATE EXTENSION IF NOT EXISTS vector;");
+		try {
+			await this.exec("SET hnsw.ef_search = 100;");
+		} catch (e) {
+			logger.warn(
+				e,
+				"Failed to set hnsw.ef_search. It might not be supported yet or the index is not loaded.",
+			);
+		}
 
 		// Check if the table exists and if the embedding dimension matches
 		const tableExists = await this.query<{ exists: boolean }>(
@@ -260,7 +278,6 @@ export class VectorEngine {
 			"CREATE INDEX idx_markdown_chunks_embedding ON markdown_chunks USING hnsw (embedding vector_ip_ops) WITH (m = 24, ef_construction = 100);",
 		);
 
-
 		// Ensure new columns exist for existing databases and update search_vector if needed
 		try {
 			await this.exec(
@@ -280,18 +297,28 @@ export class VectorEngine {
 				await this.exec(
 					"ALTER TABLE markdown_chunks DROP COLUMN IF EXISTS search_vector;",
 				);
+				await this.exec(
+					"ALTER TABLE markdown_chunks DROP COLUMN IF EXISTS search_vector_simple;",
+				);
 			} catch (_e) {
 				logger.debug(
-					"search_vector column did not exist or could not be dropped.",
+					"search_vector columns did not exist or could not be dropped.",
 				);
 			}
 
 			await this.exec(`
-        ALTER TABLE markdown_chunks ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
-          setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
-          setweight(to_tsvector('english', coalesce(content, '')), 'B')
-        ) STORED;
-      `);
+		ALTER TABLE markdown_chunks ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
+		setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
+		setweight(to_tsvector('english', coalesce(content, '')), 'B')
+		) STORED;
+		`);
+
+			await this.exec(`
+		ALTER TABLE markdown_chunks ADD COLUMN search_vector_simple tsvector GENERATED ALWAYS AS (
+		setweight(to_tsvector('simple', coalesce(heading, '')), 'A') || 
+		setweight(to_tsvector('simple', coalesce(content, '')), 'B')
+		) STORED;
+		`);
 		} catch (_e) {
 			logger.warn(
 				"Could not update schema columns, they might already exist or the syntax is unsupported by this version.",
@@ -304,6 +331,12 @@ export class VectorEngine {
 			"CREATE INDEX idx_markdown_chunks_search_vector ON markdown_chunks USING GIN (search_vector);",
 		);
 
+		await this.exec(
+			"DROP INDEX IF EXISTS idx_markdown_chunks_search_vector_simple;",
+		);
+		await this.exec(
+			"CREATE INDEX idx_markdown_chunks_search_vector_simple ON markdown_chunks USING GIN (search_vector_simple);",
+		);
 		logger.info("Database subsystem fully ready and schema verified.");
 	}
 
@@ -320,10 +353,13 @@ export class VectorEngine {
       search_vector tsvector GENERATED ALWAYS AS (
         setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
         setweight(to_tsvector('english', coalesce(content, '')), 'B')
+      ) STORED,
+      search_vector_simple tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('simple', coalesce(heading, '')), 'A') || 
+        setweight(to_tsvector('simple', coalesce(content, '')), 'B')
       ) STORED
     );
   `;
-
 
 	async exec(query: string): Promise<void> {
 		if (this.pglite) {
@@ -335,9 +371,9 @@ export class VectorEngine {
 		}
 	}
 
-	async query<T extends Record<string, any>>(
+	async query<T extends Record<string, unknown>>(
 		query: string,
-		params: any[],
+		params: unknown[],
 	): Promise<{ rows: T[] }> {
 		if (this.pglite) {
 			const res = await this.pglite.query<T>(query, params);
@@ -378,30 +414,73 @@ export class VectorEngine {
 		return files;
 	}
 
-	async indexSingleFile(filePath: string, repositoryId?: string) {
+	async indexSingleFile(
+		filePath: string,
+		repositoryId?: string,
+	): Promise<string | undefined> {
 		let content = "";
+		let finalFilePath = filePath;
+
 		if (filePath.endsWith(".pdf")) {
-			const pdfBuffer = fs.readFileSync(filePath);
-			const pdfData = await pdf2md(pdfBuffer);
-			content = pdfData;
+			logger.info({ file: filePath }, "Converting PDF to markdown...");
+			try {
+				const pdfBuffer = fs.readFileSync(filePath);
+				const pdfData = await pdf2md(pdfBuffer);
+				content = Array.isArray(pdfData) ? pdfData.join("\n") : pdfData;
+				logger.info(
+					{ file: filePath, contentLength: content.length },
+					"PDF conversion successful.",
+				);
+
+				// Save converted markdown and remove original PDF
+				finalFilePath = filePath.replace(/\.pdf$/i, ".md");
+				fs.writeFileSync(finalFilePath, content);
+				fs.unlinkSync(filePath);
+				logger.info(
+					{ pdf: filePath, md: finalFilePath },
+					"PDF replaced with markdown on disk.",
+				);
+			} catch (error) {
+				logger.error(
+					{ file: filePath, error },
+					"Failed to convert PDF to markdown.",
+				);
+				return;
+			}
 		} else {
 			content = fs.readFileSync(filePath, "utf-8");
 		}
 
-		// Clean data: strip base64 images and large blobs to save embedding tokens and DB space
-		const cleanedContent = content.replace(
-			/data:image\/[a-zA-Z]*;base64,[^)\s]*/g,
-			"[base64 image removed]",
-		);
+		// Clean data: strip base64 images, markdown images, HTML images, and image links
+		const cleanedContent = content
+			.replace(/data:[^;]+;base64,[^)\s"']*/g, "[base64 image removed]")
+			.replace(/!\[.*?\]\(.*?\)/g, "") // Remove Markdown images
+			.replace(/<img.*?>/g, "") // Remove HTML image tags
+			.replace(
+				/\[.*?\]\(.*?\.(?:png|jpg|jpeg|gif|webp|svg|pdf)(?:\?.*?)?\)/gi,
+				"",
+			) // Remove links to images/pdfs
+			.replace(/\n{3,}/g, "\n\n"); // Collapse multiple newlines
 
-		const relativePath = path.relative(process.cwd(), filePath);
-		const stats = fs.statSync(filePath);
+		if (cleanedContent.trim().length === 0) {
+			logger.warn(
+				{ file: filePath },
+				"File is empty or conversion yielded no text. Skipping.",
+			);
+			return;
+		}
+
+		const relativePath = path.relative(process.cwd(), finalFilePath);
+		const stats = fs.statSync(finalFilePath);
 
 		// Remove old chunks for this file
 		await this.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
 			relativePath,
 		]);
-		logger.info({ file: relativePath }, "Document chunks removed from database.");
+		logger.info(
+			{ file: relativePath },
+			"Document chunks removed from database.",
+		);
 
 		// Step 1: Structural AST Split
 		const sections = this.structuralSplit(cleanedContent);
@@ -412,9 +491,12 @@ export class VectorEngine {
 			// Step 2: Semantic Sub-Split within each section
 			const subChunks = await this.semanticSubSplit(section.content);
 			for (const chunkText of subChunks) {
+				const trimmed = chunkText.trim();
+				if (trimmed.length < 20) continue; // Skip very short noise chunks
+
 				allChunksToEmbed.push({
 					heading: section.breadcrumbs.join(" > "),
-					text: chunkText,
+					text: trimmed,
 				});
 			}
 		}
@@ -451,6 +533,8 @@ export class VectorEngine {
 			{ file: relativePath, chunks: allChunksToEmbed.length },
 			"File indexed successfully with batch processing.",
 		);
+
+		return relativePath;
 	}
 
 	private async getEmbeddingsBatch(texts: string[]): Promise<number[][]> {
@@ -464,13 +548,25 @@ export class VectorEngine {
 			normalize: true,
 		});
 
-		// Transformers pipeline returns a single Tensor for batch processing
-		// We need to slice it back into individual vectors
-		const data = (output as TransformerOutput).data;
-		const dimension = 768;
+		return this.sliceBatchOutput(output as TransformerOutput, texts.length);
+	}
+
+	private sliceBatchOutput(
+		output: TransformerOutput,
+		batchSize: number,
+	): number[][] {
+		const data = output.data;
+		if (batchSize === 0) return [];
+		const dimension = data.length / batchSize;
+		if (data.length % batchSize !== 0) {
+			logger.error(
+				{ dataLength: data.length, batchSize },
+				"Embedding data length is not a multiple of batch size",
+			);
+		}
 		const results: number[][] = [];
 
-		for (let i = 0; i < texts.length; i++) {
+		for (let i = 0; i < batchSize; i++) {
 			const start = i * dimension;
 			const end = start + dimension;
 			results.push(Array.from(data.slice(start, end)));
@@ -479,15 +575,11 @@ export class VectorEngine {
 		return results;
 	}
 
-
-
-
 	private structuralSplit(
 		content: string,
 	): { breadcrumbs: string[]; content: string }[] {
 		const tree = fromMarkdown(content);
 		const sections: { breadcrumbs: string[]; content: string }[] = [];
-		let currentBreadcrumbs: string[] = [];
 
 		const processNodes = (nodes: Content[], breadcrumbs: string[]) => {
 			let currentSectionContent: Content[] = [];
@@ -542,12 +634,19 @@ export class VectorEngine {
 		if (blocks.length <= 1) return [text];
 
 		// Batch embedding for all blocks
-		const blockOutputs = (await this.splitterExtractor(blocks, {
+		const output = await this.splitterExtractor(blocks, {
 			pooling: "mean",
 			normalize: true,
-		})) as TransformerOutput[];
+		});
 
-		const vectors = blockOutputs.map((out) => out.data);
+		// Use dynamic dimension detection based on data length and batch size
+		const data = (output as TransformerOutput).data;
+		const dimension = data.length / blocks.length;
+		const vectors: Float32Array[] = [];
+		for (let i = 0; i < blocks.length; i++) {
+			vectors.push(data.slice(i * dimension, (i + 1) * dimension));
+		}
+
 		const chunks: string[] = [];
 		let currentChunkBlocks: string[] = [blocks[0]];
 
@@ -569,8 +668,8 @@ export class VectorEngine {
 		for (const chunk of chunks) {
 			if (chunk.length > 1500) {
 				const recursiveSplitter = new RecursiveCharacterTextSplitter({
-					chunkSize: 600,
-					chunkOverlap: 120,
+					chunkSize: 1000,
+					chunkOverlap: 250,
 				});
 				const subParts = await recursiveSplitter.splitText(chunk);
 				finalChunks.push(...subParts);
@@ -604,33 +703,55 @@ export class VectorEngine {
 		limit = 5,
 		rerank = false,
 		repositoryId?: string,
+		hybrid = false,
 	): Promise<MarkdownChunk[]> {
+		logger.info(
+			{ query, limit, rerank, repositoryId, hybrid },
+			"Performing search",
+		);
 		const queryVector = await this.getEmbedding(query);
 		const queryVectorStr = `[${queryVector.join(",")}]`;
 		const queryText = query.trim();
 
 		const VECTOR_WEIGHT = 1.0;
-		const TEXT_WEIGHT = 1.0;
+		const TEXT_WEIGHT = 1.5;
+		const KEYWORD_WEIGHT = 2.0;
+		const HEADING_WEIGHT = 5.0; // Dramatically boost literal heading matches
 		const K = 60;
-		const initialLimit = rerank ? Math.max(50, limit * 2) : limit;
+		// RECALL_LIMIT ensures we consider enough candidates for RRF fusion
+		const RECALL_LIMIT = Math.max(200, rerank ? limit * 10 : limit * 5);
 
-		const repoFilter = repositoryId ? "AND repository_id = $4" : "";
+		let results: MarkdownChunk[];
 
-		const res = await this.query<
-			MarkdownChunk & { distance: number; rrf_score: number }
-		>(
-			`
+		if (hybrid) {
+			const repoFilter = repositoryId ? "AND repository_id = $5" : "";
+			const res = await this.query<
+				MarkdownChunk & { distance: number; rrf_score: number }
+			>(
+				`
       WITH vector_search AS (
         SELECT id, row_number() OVER (ORDER BY embedding <#> $1 ASC) as rank
         FROM markdown_chunks
         WHERE 1=1 ${repoFilter}
-        LIMIT $3 * 2
+        LIMIT $4
       ),
       text_search AS (
         SELECT id, row_number() OVER (ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english', $2)) DESC) as rank
         FROM markdown_chunks
         WHERE search_vector @@ websearch_to_tsquery('english', $2) ${repoFilter}
-        LIMIT $3 * 2
+        LIMIT $4
+      ),
+      keyword_search AS (
+        SELECT id, row_number() OVER (ORDER BY ts_rank_cd(search_vector_simple, websearch_to_tsquery('simple', $2)) DESC) as rank
+        FROM markdown_chunks
+        WHERE search_vector_simple @@ websearch_to_tsquery('simple', $2) ${repoFilter}
+        LIMIT $4
+      ),
+      heading_search AS (
+        SELECT id, row_number() OVER (ORDER BY (heading ILIKE $2) DESC, length(heading) ASC) as rank
+        FROM markdown_chunks
+        WHERE heading ILIKE '%' || $2 || '%' ${repoFilter}
+        LIMIT $4
       )
       SELECT 
         m.id,
@@ -643,21 +764,53 @@ export class VectorEngine {
         COALESCE((m.embedding <#> $1) * -1, 0.0) as distance,
         (
           COALESCE(${VECTOR_WEIGHT.toFixed(1)} / (${K}.0 + v.rank), 0.0) + 
-          COALESCE(${TEXT_WEIGHT.toFixed(1)} / (${K}.0 + t.rank), 0.0)
+          COALESCE(${TEXT_WEIGHT.toFixed(1)} / (${K}.0 + t.rank), 0.0) +
+          COALESCE(${KEYWORD_WEIGHT.toFixed(1)} / (${K}.0 + k.rank), 0.0) +
+          COALESCE(${HEADING_WEIGHT.toFixed(1)} / (${K}.0 + h.rank), 0.0)
         )::float as rrf_score
       FROM markdown_chunks m
       LEFT JOIN vector_search v ON m.id = v.id
       LEFT JOIN text_search t ON m.id = t.id
-      WHERE v.id IS NOT NULL OR t.id IS NOT NULL
+      LEFT JOIN keyword_search k ON m.id = k.id
+      LEFT JOIN heading_search h ON m.id = h.id
+      WHERE v.id IS NOT NULL OR t.id IS NOT NULL OR k.id IS NOT NULL OR h.id IS NOT NULL
       ORDER BY rrf_score DESC
       LIMIT $3;
     `,
-			repositoryId
-				? [queryVectorStr, queryText, initialLimit, repositoryId]
-				: [queryVectorStr, queryText, initialLimit],
-		);
+				repositoryId
+					? [queryVectorStr, queryText, limit, RECALL_LIMIT, repositoryId]
+					: [queryVectorStr, queryText, limit, RECALL_LIMIT],
+			);
+			results = res.rows;
+		} else {
+			const repoFilter = repositoryId ? "AND repository_id = $3" : "";
+			const res = await this.query<
+				MarkdownChunk & { distance: number; rrf_score: number }
+			>(
+				`
+      SELECT 
+        id,
+        file_path, 
+        heading, 
+        content, 
+        last_modified,
+        word_count,
+        repository_id,
+        COALESCE((embedding <#> $1) * -1, 0.0) as distance,
+        COALESCE((embedding <#> $1) * -1, 0.0) as rrf_score
+      FROM markdown_chunks
+      WHERE 1=1 ${repoFilter}
+      ORDER BY embedding <#> $1 ASC
+      LIMIT $2;
+    `,
+				repositoryId
+					? [queryVectorStr, limit, repositoryId]
+					: [queryVectorStr, limit],
+			);
+			results = res.rows;
+		}
 
-		let results: MarkdownChunk[] = res.rows;
+		logger.debug({ count: results.length }, "Initial search results found");
 
 		if (rerank && this.rerankerModel && this.rerankerTokenizer) {
 			logger.info(
@@ -727,17 +880,23 @@ export class VectorEngine {
 		};
 	}
 
-	async destroy() {
-		this.initialized = false;
-		if (this.pglite) {
-			const db = this.pglite;
-			this.pglite = undefined;
-			await db.close();
+	async readDocument(filePath: string): Promise<string | null> {
+		const fullPath = path.resolve(process.cwd(), filePath);
+		if (!fullPath.startsWith(process.cwd())) {
+			logger.warn(
+				{ filePath },
+				"Security violation: Attempted to read file outside of workspace.",
+			);
+			return null;
 		}
-		if (this.sql) {
-			const sql = this.sql;
-			this.sql = undefined;
-			await sql.end();
-		}
+		if (!fs.existsSync(fullPath)) return null;
+		return fs.readFileSync(fullPath, "utf-8");
+	}
+
+	async removeDocument(filePath: string) {
+		await this.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
+			filePath,
+		]);
+		logger.info({ file: filePath }, "Document removed from database.");
 	}
 }

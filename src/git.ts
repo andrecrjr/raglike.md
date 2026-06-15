@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { logger } from "./logger";
 import type { VectorEngine } from "./engine";
+import { logger } from "./logger";
 
 export class GitManager {
 	private engine: VectorEngine;
@@ -16,13 +16,22 @@ export class GitManager {
 		}
 	}
 
-	private runCommand(command: string, args: string[], cwd: string): Promise<void> {
+	private runCommand(
+		command: string,
+		args: string[],
+		cwd: string,
+	): Promise<void> {
 		return new Promise((resolve, reject) => {
 			const process = spawn(command, args, { cwd });
 
 			process.on("close", (code) => {
 				if (code === 0) resolve();
-				else reject(new Error(`Command ${command} ${args.join(" ")} failed with code ${code}`));
+				else
+					reject(
+						new Error(
+							`Command ${command} ${args.join(" ")} failed with code ${code}`,
+						),
+					);
 			});
 
 			process.on("error", (err) => reject(err));
@@ -36,9 +45,16 @@ export class GitManager {
 		try {
 			if (isNew) {
 				logger.info({ repoUrl, repositoryId }, "Cloning new repository...");
-				await this.runCommand("git", ["clone", repoUrl, repositoryId], this.baseDir);
+				await this.runCommand(
+					"git",
+					["clone", repoUrl, repositoryId],
+					this.baseDir,
+				);
 			} else {
-				logger.info({ repositoryId }, "Pulling latest changes for repository...");
+				logger.info(
+					{ repositoryId },
+					"Pulling latest changes for repository...",
+				);
 				await this.runCommand("git", ["pull"], repoDir);
 			}
 

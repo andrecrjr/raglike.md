@@ -24,10 +24,14 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
 ### 2. Search Strategy (Two-Stage Retrieval)
 `raglike-md` uses a sophisticated two-stage search pipeline to ensure both speed and precision:
 
-1.  **Stage 1: Hybrid Retrieval (RRF)**
-    - Combines **Vector Search** (semantic similarity) and **Full-Text Search** (keyword matching).
-    - Uses **Reciprocal Rank Fusion (RRF)** to merge results from both methods.
-    - Parameters: `k = 60`, weighted `1.0` for both vector and text.
+1.  **Stage 1: Hybrid Retrieval (4-way RRF)**
+    - Combines four distinct signals using **Reciprocal Rank Fusion (RRF)**:
+        - **Vector Search (1.0)**: Semantic similarity using `all-mpnet-base-v2`.
+        - **English Text Search (1.2)**: Keyword matching with stemming and stop-words.
+        - **Simple Text Search (1.5)**: Literal keyword matching (no stemming) to preserve technical terms.
+        - **Heading Literal Match (2.0)**: Strong boost for queries appearing directly in document headings, favoring shorter, more precise titles.
+    - Parameters: `k = 60`, `recall_limit = 100+`.
+
 
 2.  **Stage 2: Cross-Encoder Reranking (Optional)**
     - For high-precision requirements, the engine can rerank the top candidates from Stage 1.
@@ -37,8 +41,9 @@ High-performance local semantic search engine using Bun, PGlite, and Xenova Tran
 
 ### 3. Chunking Strategy
 - **Type:** Hierarchical Markdown-aware chunking.
-- **Size:** Sliding window of ~600 characters.
-- **Overlap:** ~120 characters to preserve cross-chunk context.
+- **Size:** Sliding window of ~1000 characters.
+- **Overlap:** ~250 characters to preserve cross-chunk context.
+- **Minimum Length:** Chunks shorter than 20 characters are filtered as noise.
 - **Context Slop:** Chunks are enriched with "Context Slop" (breadcrumbs and sentences from adjacent chunks) to provide the LLM with immediate surroundings without fetching neighbors.
 
 ## MCP (Tool Usage Examples)
@@ -117,8 +122,13 @@ curl -X POST http://localhost:4321/search \
 ### Docker-First Workflow (ALWAYS Preferred)
 - **Start Stack:** `docker compose up -d`
 - **Rebuild & Restart:** `docker compose build raglike-md && docker compose up -d raglike-md`
-- **Logs:** `docker compose logs -f raglike-md`
 - **In-Container Testing:** `docker compose exec raglike-md bun test`
+
+### 🪵 Logging & Observability
+- **Container Logs (STDOUT):** `docker compose logs -f raglike-md`
+- **Persistent App Logs:** `docker compose exec raglike-md cat .logs/app.log`
+- **Real-time App Logs:** `docker compose exec raglike-md tail -f .logs/app.log`
+- **Search Troubleshooting:** Look for `Performing search` and `Initial search results found` entries in `app.log`.
 
 ### Local Development (Bun)
 - **Setup:** `bun install`

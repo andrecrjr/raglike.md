@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, type Mock, mock, test } from "bun:test";
 import { compareAndUpload, discoverFiles } from "./index";
 
 // Mocking fs and fetch
@@ -17,13 +17,13 @@ describe("raglike-cli", () => {
 	test("discoverFiles should find .md and .pdf files recursively", async () => {
 		const { readdirSync, statSync } = await import("node:fs");
 
-		(readdirSync as any).mockImplementation((path: string) => {
+		(readdirSync as Mock).mockImplementation((path: string) => {
 			if (path === "test-dir") return ["file1.md", "subdir"];
 			if (path === "test-dir/subdir") return ["file2.pdf", "other.txt"];
 			return [];
 		});
 
-		(statSync as any).mockImplementation((path: string) => ({
+		(statSync as Mock).mockImplementation((path: string) => ({
 			isDirectory: () => path.endsWith("subdir"),
 			isFile: () => !path.endsWith("subdir"),
 			size: 100,
@@ -60,7 +60,7 @@ describe("raglike-cli", () => {
 				return Promise.resolve(new Response(JSON.stringify({ success: true })));
 			}
 			return Promise.resolve(new Response(null, { status: 404 }));
-		}) as any;
+		}) as unknown as typeof fetch;
 
 		const results = await compareAndUpload(serverUrl, token, localFiles);
 
@@ -68,9 +68,9 @@ describe("raglike-cli", () => {
 		expect(results.skipped).toContain("file1.md");
 
 		// Check that fetch was called for upload
-		const fetchCalls = (global.fetch as any).mock.calls;
-		const uploadCalls = fetchCalls.filter((call: any) =>
-			call[0].endsWith("/upload"),
+		const fetchCalls = (global.fetch as Mock).mock.calls;
+		const uploadCalls = fetchCalls.filter((call) =>
+			call[0].toString().endsWith("/upload"),
 		);
 		expect(uploadCalls).toHaveLength(1);
 		expect(uploadCalls[0][1].headers.Authorization).toBe(`Bearer ${token}`);
