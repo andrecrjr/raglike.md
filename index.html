@@ -151,8 +151,8 @@
                             </div>
                             <span class="text-[8px] font-black text-slate-300 uppercase tracking-widest">Engine</span>
                         </div>
-                        <p class="text-3xl font-black text-slate-900 italic">all-mpnet-v2</p>
-                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">SOTA Embedding Model</p>
+                        <p id="statEngine" class="text-xl font-black text-slate-900 truncate">Detecting...</p>
+                        <p id="statEngineDetail" class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">SOTA Embedding Model</p>
                     </div>
                     <div class="stat-card group">
                         <div class="flex items-center justify-between mb-4">
@@ -403,6 +403,8 @@
         const docTableBody = document.getElementById('docTableBody');
         const topBarDocCount = document.getElementById('topBarDocCount');
         const statDocs = document.getElementById('statDocs');
+        const statEngine = document.getElementById('statEngine');
+        const statEngineDetail = document.getElementById('statEngineDetail');
         const libraryCountLabel = document.getElementById('libraryCountLabel');
         const resultCountLabel = document.getElementById('resultCount');
         const emptyLibrary = document.getElementById('emptyLibrary');
@@ -577,6 +579,24 @@
             }
         }
 
+        async function loadEngineInfo() {
+            try {
+                const res = await fetch('/engine-info', {
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+                if (data.success) {
+                    const modelName = data.info.model.split('/').pop();
+                    statEngine.innerText = modelName;
+                    statEngineDetail.innerText = `${data.info.dimension} Dimensions ${data.info.isExternal ? '(External)' : '(Local)'}`;
+                    console.log(`Engine info loaded: ${data.info.model}`);
+                }
+            } catch (error) {
+                console.error('Engine info protocol failure:', error);
+                statEngine.innerText = 'Offline';
+            }
+        }
+
         async function loadDocs() {
             try {
                 const res = await fetch('/list-docs', {
@@ -746,6 +766,7 @@
 
         // Dashboard Initialization
         console.log("raglike.md script fully loaded, initializing dashboard...");
+        loadEngineInfo();
         loadDocs();
     </script>
 </body>
