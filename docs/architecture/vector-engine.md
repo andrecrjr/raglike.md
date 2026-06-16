@@ -1,6 +1,6 @@
 # Vector Engine Internals
 
-The `VectorEngine` class ([src/engine.ts](file:///home/andrecrjr/Documents/dev/mcps/raglike-md/src/engine.ts)) manages document ingestion, structured chunking, vector embedding, and hybrid search retrieval.
+The `VectorEngine` class ([src/engine.ts](../../src/engine.ts)) manages document ingestion, structured chunking, vector embedding, and hybrid search retrieval.
 
 ---
 

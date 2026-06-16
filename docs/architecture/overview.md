@@ -67,7 +67,7 @@ graph TD
 
 ## ⚙️ Core Components
 
-### 1. Vector Engine ([src/engine.ts](file:///home/andrecrjr/Documents/dev/mcps/raglike-md/src/engine.ts))
+### 1. Vector Engine ([src/engine.ts](../../src/engine.ts))
 The heart of the application. It handles database connections, document ingestion, AST parsing, embedding generation, and hybrid retrieval:
 *   **Dual DB Layer**: Seamlessly switches between embedded **PGlite** (with disk persistence in `./.db`) and **External Postgres** (using `POSTGRES_URL`).
 *   **Smart AST Chunking**: Parses Markdown using `mdast` to extract structured sections. It divides large sections into paragraphs, keeping code blocks bound to their preceding context.
@@ -76,18 +76,18 @@ The heart of the application. It handles database connections, document ingestio
 *   **4-Way Reciprocal Rank Fusion (RRF)**: Merges scores from semantic search, English text search (stemmed), Simple text search (literal/technical), and Heading boost matching.
 *   **Cross-Encoder Reranking**: Utilizes `Xenova/bge-reranker-base` to rerank the top candidates to ensure ultra-high relevance.
 
-### 2. MCP Server ([src/mcp.ts](file:///home/andrecrjr/Documents/dev/mcps/raglike-md/src/mcp.ts))
+### 2. MCP Server ([src/mcp.ts](../../src/mcp.ts))
 Implements the [Model Context Protocol](https://modelcontextprotocol.io/) to expose search capabilities to AI tools:
 *   `semantic_markdown_search`: Returns granular document chunks matching a query. Supports `repository` filtering, `hybrid` mode toggle, and `rerank` activation.
 *   `read_chunk_neighbors`: Expands the local search result by fetching the previous/next logical chunks in the document.
 *   `get_full_document`: Fetches the entire raw file for full-context analysis.
 
-### 3. HTTP API Server ([src/api.ts](file:///home/andrecrjr/Documents/dev/mcps/raglike-md/src/api.ts))
+### 3. HTTP API Server ([src/api.ts](../../src/api.ts))
 Exposes REST endpoints and serves a local web client:
 *   Includes a stateful Server-Sent Events (SSE) `/mcp` transport.
 *   Enforces optional Bearer token security.
 *   Handles multi-multipart file uploads and direct chunk deletions.
 *   Synchronizes git pushes from GitLab/GitHub via HMAC/Token signature verified webhooks.
 
-### 4. Git Manager ([src/git.ts](file:///home/andrecrjr/Documents/dev/mcps/raglike-md/src/git.ts))
+### 4. Git Manager ([src/git.ts](../../src/git.ts))
 Integrates with the local git binary to clone or pull git repositories when webhook events are received, subsequently indexing all contained `.md` files under a dedicated `repository_id` scope.
