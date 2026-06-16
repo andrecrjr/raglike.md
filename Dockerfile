@@ -2,6 +2,9 @@
 FROM oven/bun:latest AS builder
 WORKDIR /app
 
+# Allow passing the embedding model as a build argument
+ARG EMBEDDING_MODEL=Xenova/jina-embeddings-v2-base-en
+
 COPY package.json ./
 RUN bun install
 
@@ -9,7 +12,7 @@ COPY . .
 
 # Pre-cache the embedding and reranker models during build time into a specific directory
 RUN mkdir -p /app/.cache && \
-    HF_HOME=/app/.cache bun -e "import { pipeline } from '@huggingface/transformers'; await pipeline('feature-extraction', 'Xenova/jina-embeddings-v2-base-en'); await pipeline('text-classification', 'Xenova/bge-reranker-base');"
+    HF_HOME=/app/.cache bun -e "import { pipeline } from '@huggingface/transformers'; await pipeline('feature-extraction', '${EMBEDDING_MODEL}'); await pipeline('text-classification', 'Xenova/bge-reranker-base');"
 
 # Stage 2: Runtime Minimal Environment
 FROM oven/bun:latest AS runner

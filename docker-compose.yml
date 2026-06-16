@@ -16,7 +16,10 @@ services:
       retries: 5
 
   raglike-md:
-    build: .
+    build:
+      context: .
+      args:
+        - EMBEDDING_MODEL=${EMBEDDING_MODEL:-Xenova/jina-embeddings-v2-base-en}
     ports:
       - "4321:4321"
     env_file:
