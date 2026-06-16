@@ -24,16 +24,16 @@ describe("External Embedding API", () => {
 		process.env.API_EMBEDDING_URL = "http://mock-api.local/embeddings";
 		process.env.API_EMBEDDING_TOKEN = "test-token";
 
-		const engine = getTestEngine();
-		await engine.initialize();
-
-		const mockEmbeddings = [[0.1, 0.2, 0.3]];
+		const mockEmbeddings = [new Array(768).fill(0.1)];
 
 		global.fetch = mock(() => {
 			return Promise.resolve(
 				new Response(JSON.stringify({ embeddings: mockEmbeddings })),
 			);
 		}) as unknown as typeof fetch;
+
+		const engine = getTestEngine();
+		await engine.initialize();
 
 		const results = await engine.getPublicEmbeddings(["test"]);
 		expect(results).toEqual(mockEmbeddings);
