@@ -284,7 +284,7 @@ export class VectorEngine {
 
 			if (!this.mocks.extractor) {
 				logger.info(
-					`Models loaded: ${modelName} (Embedding) & bge-reranker-base (Reranker)`,
+					`Models loaded: ${this.modelName} (Embedding) & bge-reranker-base (Reranker)`,
 				);
 			}
 
