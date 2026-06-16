@@ -189,6 +189,7 @@ export class VectorEngine {
 	private initialized = false;
 	private initializing: Promise<void> | null = null;
 	private mocks: EngineMocks = {};
+	private embeddingDimension = 768;
 
 	constructor(dbPath?: string, mocks: EngineMocks = {}) {
 		this.dbPathOverride = dbPath;
@@ -200,6 +201,8 @@ export class VectorEngine {
 		if (this.initializing) return this.initializing;
 
 		this.initializing = (async () => {
+			const modelName = process.env.EMBEDDING_MODEL || "Xenova/all-mpnet-base-v2";
+
 			// Use mocks if provided, otherwise load from cache or pipeline
 			if (this.mocks.extractor) {
 				this.extractor = this.mocks.extractor;
@@ -211,10 +214,15 @@ export class VectorEngine {
 				logger.debug("Loading extractor from pipeline...");
 				this.extractor = (await pipeline(
 					"feature-extraction",
-					"Xenova/all-mpnet-base-v2",
+					modelName,
 				)) as Extractor;
 				modelCache.extractor = this.extractor;
 			}
+
+			// Detect embedding dimension
+			const testEmbed = await this.getEmbedding("test");
+			this.embeddingDimension = testEmbed.length;
+			logger.info(`Embedding dimension detected: ${this.embeddingDimension}`);
 
 			if (this.mocks.splitterExtractor) {
 				this.splitterExtractor = this.mocks.splitterExtractor;
@@ -263,7 +271,7 @@ export class VectorEngine {
 
 			if (!this.mocks.extractor) {
 				logger.info(
-					"Models loaded: all-mpnet-base-v2 (Embedding) & bge-reranker-base (Reranker)",
+					`Models loaded: ${modelName} (Embedding) & bge-reranker-base (Reranker)`,
 				);
 			}
 
@@ -364,16 +372,26 @@ export class VectorEngine {
 				"SELECT atttypmod FROM pg_attribute WHERE attrelid = 'markdown_chunks'::regclass AND attname = 'embedding'",
 				[],
 			);
-			if (dimRes.rows.length > 0 && dimRes.rows[0].atttypmod !== 768) {
+			if (
+				dimRes.rows.length > 0 &&
+				dimRes.rows[0].atttypmod !== this.embeddingDimension
+			) {
 				logger.warn(
-					{ oldDim: dimRes.rows[0].atttypmod, newDim: 768 },
+					{
+						oldDim: dimRes.rows[0].atttypmod,
+						newDim: this.embeddingDimension,
+					},
 					"Vector dimension mismatch detected. Dropping table for re-ingestion.",
 				);
 				await this.exec("DROP TABLE markdown_chunks;");
 			}
 		}
 
-		await this.exec(VectorEngine.SCHEMA);
+		const schema = VectorEngine.SCHEMA.replace(
+			"vector(768)",
+			`vector(${this.embeddingDimension})`,
+		);
+		await this.exec(schema);
 
 		// Step 4: Add HNSW index for high-performance vector search with tuned parameters
 		// We drop and recreate to ensure parameters like m and ef_construction are applied

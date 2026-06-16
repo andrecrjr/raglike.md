@@ -9,7 +9,7 @@ COPY . .
 
 # Pre-cache the embedding and reranker models during build time into a specific directory
 RUN mkdir -p /app/.cache && \
-    HF_HOME=/app/.cache bun -e "import { pipeline } from '@huggingface/transformers'; await pipeline('feature-extraction', 'Xenova/all-mpnet-base-v2'); await pipeline('text-classification', 'Xenova/bge-reranker-base');"
+    HF_HOME=/app/.cache bun -e "import { pipeline } from '@huggingface/transformers'; await pipeline('feature-extraction', 'Xenova/jina-embeddings-v2-base-en'); await pipeline('text-classification', 'Xenova/bge-reranker-base');"
 
 # Stage 2: Runtime Minimal Environment
 FROM oven/bun:latest AS runner
