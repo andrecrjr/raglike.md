@@ -281,4 +281,14 @@ describe("PGlite Vector Search Engine Core", () => {
 			'<img src="https://example.com/other.jpg">',
 		);
 	});
+
+	test("Should return correct engine info", async () => {
+		const engine = getTestEngine();
+		await engine.initialize();
+		const info = engine.getEngineInfo();
+
+		expect(info.model).toBeDefined();
+		expect(info.dimension).toBeGreaterThan(0);
+		expect(info.isExternal).toBe(false);
+	});
 });

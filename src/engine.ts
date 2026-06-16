@@ -190,10 +190,22 @@ export class VectorEngine {
 	private initializing: Promise<void> | null = null;
 	private mocks: EngineMocks = {};
 	private embeddingDimension = 768;
+	private modelName = "Xenova/all-mpnet-base-v2";
 
 	constructor(dbPath?: string, mocks: EngineMocks = {}) {
 		this.dbPathOverride = dbPath;
 		this.mocks = mocks;
+	}
+
+	/**
+	 * Returns information about the current engine configuration.
+	 */
+	getEngineInfo() {
+		return {
+			model: this.modelName,
+			dimension: this.embeddingDimension,
+			isExternal: !!process.env.API_EMBEDDING_URL,
+		};
 	}
 
 	async initialize() {
@@ -201,7 +213,8 @@ export class VectorEngine {
 		if (this.initializing) return this.initializing;
 
 		this.initializing = (async () => {
-			const modelName = process.env.EMBEDDING_MODEL || "Xenova/all-mpnet-base-v2";
+			this.modelName =
+				process.env.EMBEDDING_MODEL || "Xenova/all-mpnet-base-v2";
 
 			// Use mocks if provided, otherwise load from cache or pipeline
 			if (this.mocks.extractor) {
@@ -214,7 +227,7 @@ export class VectorEngine {
 				logger.debug("Loading extractor from pipeline...");
 				this.extractor = (await pipeline(
 					"feature-extraction",
-					modelName,
+					this.modelName,
 				)) as Extractor;
 				modelCache.extractor = this.extractor;
 			}

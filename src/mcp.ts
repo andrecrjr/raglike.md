@@ -83,6 +83,15 @@ export function createMcpServer(engine: VectorEngine) {
 					required: ["file_path"],
 				},
 			},
+			{
+				name: "get_engine_info",
+				description:
+					"Returns information about the current embedding model and vector configuration.",
+				inputSchema: {
+					type: "object",
+					properties: {},
+				},
+			},
 		],
 	}));
 
@@ -191,8 +200,19 @@ export function createMcpServer(engine: VectorEngine) {
 				};
 			}
 		},
-	};
 
+		get_engine_info: async () => {
+			const info = engine.getEngineInfo();
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Current Model: ${info.model}\nVector Dimension: ${info.dimension}\nUsing External API: ${info.isExternal}`,
+					},
+				],
+			};
+		},
+	};
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
 		logger.info(
 			{ tool: req.params.name, arguments: req.params.arguments },

@@ -280,6 +280,18 @@ export async function startHttpServer(engine: VectorEngine) {
 				}
 			}
 
+			// Engine Info
+			if (req.method === "GET" && url.pathname === "/engine-info") {
+				try {
+					return Response.json({
+						success: true,
+						info: engine.getEngineInfo(),
+					});
+				} catch (err) {
+					return Response.json({ error: String(err) }, { status: 500 });
+				}
+			}
+
 			// Delete Document
 			if (req.method === "DELETE" && url.pathname === "/doc") {
 				try {
