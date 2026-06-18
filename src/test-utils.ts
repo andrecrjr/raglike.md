@@ -1,10 +1,6 @@
-import {
-	type EngineMocks,
-	type Extractor,
-	type RerankerModel,
-	type RerankerTokenizer,
-	VectorEngine,
-} from "./engine";
+import type { EngineMocks } from "./engine";
+import { VectorEngine } from "./engine";
+import type { Extractor, RerankerModel, RerankerTokenizer } from "./models";
 
 /**
  * Creates a mock embedding extractor that returns deterministic vectors based on text content.

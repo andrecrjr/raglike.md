@@ -1,42 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import { PGlite } from "@electric-sql/pglite";
-import { vector } from "@electric-sql/pglite/vector";
-import {
-	AutoModelForSequenceClassification,
-	AutoTokenizer,
-	pipeline,
-} from "@huggingface/transformers";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
-import type { Content } from "mdast";
-import { fromMarkdown } from "mdast-util-from-markdown";
 import { toMarkdown } from "mdast-util-to-markdown";
-import { toString as mdastToString } from "mdast-util-to-string";
-import pdf2md from "pdf2md-ts";
-import postgres from "postgres";
+import { Chunker } from "./chunking";
+import { DatabaseManager } from "./db";
 import { logger } from "./logger";
-
-interface TransformerOutput {
-	data: Float32Array;
-}
-
-type Extractor = (
-	text: string | string[],
-	options?: { pooling?: string; normalize?: boolean; dtype?: string },
-) => Promise<TransformerOutput | TransformerOutput[]>;
-
-type RerankerModel = (
-	inputs: Record<string, unknown>,
-) => Promise<{ logits: { data: number[] } }>;
-type RerankerTokenizer = (
-	queries: string[],
-	options: {
-		text_pair: string[];
-		padding: boolean;
-		truncation: boolean;
-	},
-) => Promise<Record<string, unknown>>;
+import { ModelManager, type ModelMocks } from "./models";
 
 export interface MarkdownChunk {
 	id: string;
@@ -53,158 +21,27 @@ export interface MarkdownChunk {
 	language?: string;
 }
 
-export function detectLanguage(
-	text: string,
-	supportedLanguages: string[],
-): string {
-	const normalized = text.toLowerCase();
-
-	const stopWords: Record<string, string[]> = {
-		english: [
-			"the",
-			"and",
-			"of",
-			"to",
-			"in",
-			"is",
-			"that",
-			"it",
-			"for",
-			"on",
-			"with",
-			"as",
-		],
-		portuguese: [
-			"o",
-			"a",
-			"os",
-			"as",
-			"de",
-			"do",
-			"da",
-			"em",
-			"um",
-			"uma",
-			"para",
-			"com",
-			"por",
-			"que",
-			"se",
-		],
-		spanish: [
-			"el",
-			"la",
-			"los",
-			"las",
-			"de",
-			"del",
-			"en",
-			"un",
-			"una",
-			"para",
-			"con",
-			"por",
-			"que",
-			"como",
-		],
-		french: [
-			"le",
-			"la",
-			"les",
-			"de",
-			"des",
-			"en",
-			"un",
-			"une",
-			"pour",
-			"avec",
-			"par",
-			"que",
-			"dans",
-		],
-		german: [
-			"der",
-			"die",
-			"das",
-			"und",
-			"ist",
-			"in",
-			"zu",
-			"den",
-			"von",
-			"mit",
-			"auf",
-			"für",
-		],
-	};
-
-	let bestLang = "english"; // Default fallback
-	let maxCount = 0;
-
-	for (const lang of supportedLanguages) {
-		const words = stopWords[lang];
-		if (!words) continue;
-
-		let count = 0;
-		for (const word of words) {
-			const regex = new RegExp(`\\b${word}\\b`, "g");
-			const matches = normalized.match(regex);
-			if (matches) {
-				count += matches.length;
-			}
-		}
-
-		if (count > maxCount) {
-			maxCount = count;
-			bestLang = lang;
-		}
-	}
-
-	return bestLang;
-}
-
-// Global cache for models to avoid redundant loading
-const modelCache: {
-	extractor?: Extractor;
-	splitterExtractor?: Extractor;
-	rerankerModel?: RerankerModel;
-	rerankerTokenizer?: RerankerTokenizer;
-} = {};
-
-export interface EngineMocks {
-	extractor?: Extractor;
-	splitterExtractor?: Extractor;
-	rerankerModel?: RerankerModel;
-	rerankerTokenizer?: RerankerTokenizer;
-}
+export interface EngineMocks extends ModelMocks {}
 
 export class VectorEngine {
-	private pglite?: PGlite;
-	private sql?: postgres.Sql<Record<string, never>>;
-	private extractor?: Extractor;
-	private splitterExtractor?: Extractor;
-	private rerankerModel?: RerankerModel;
-	private rerankerTokenizer?: RerankerTokenizer;
-	private dbPathOverride?: string;
+	private db: DatabaseManager;
+	private models: ModelManager;
+	private chunker: Chunker;
 	private initialized = false;
 	private initializing: Promise<void> | null = null;
-	private mocks: EngineMocks = {};
 	private embeddingDimension = 768;
-	private modelName = "Xenova/all-mpnet-base-v2";
 
 	constructor(dbPath?: string, mocks: EngineMocks = {}) {
-		this.dbPathOverride = dbPath;
-		this.mocks = mocks;
+		this.db = new DatabaseManager(dbPath);
+		this.models = new ModelManager(mocks);
+		this.chunker = new Chunker();
 	}
 
-	/**
-	 * Returns information about the current engine configuration.
-	 */
 	getEngineInfo() {
+		const info = this.models.modelInfo;
 		return {
-			model: this.modelName,
+			...info,
 			dimension: this.embeddingDimension,
-			isExternal: !!process.env.API_EMBEDDING_URL,
 		};
 	}
 
@@ -213,127 +50,15 @@ export class VectorEngine {
 		if (this.initializing) return this.initializing;
 
 		this.initializing = (async () => {
-			this.modelName =
-				process.env.EMBEDDING_MODEL || "Xenova/all-mpnet-base-v2";
-
-			// Use mocks if provided, otherwise load from cache or pipeline
-			if (this.mocks.extractor) {
-				this.extractor = this.mocks.extractor;
-				logger.debug("Using mock extractor");
-			} else if (modelCache.extractor) {
-				this.extractor = modelCache.extractor;
-				logger.debug("Using cached extractor");
-			} else {
-				logger.debug("Loading extractor from pipeline...");
-				this.extractor = (await pipeline(
-					"feature-extraction",
-					this.modelName,
-				)) as Extractor;
-				modelCache.extractor = this.extractor;
-			}
+			await this.models.initialize();
 
 			// Detect embedding dimension
-			const testEmbed = await this.getEmbedding("test");
+			const testEmbed = await this.models.getEmbedding("test");
 			this.embeddingDimension = testEmbed.length;
 			logger.info(`Embedding dimension detected: ${this.embeddingDimension}`);
 
-			if (this.mocks.splitterExtractor) {
-				this.splitterExtractor = this.mocks.splitterExtractor;
-				logger.debug("Using mock splitterExtractor");
-			} else if (modelCache.splitterExtractor) {
-				this.splitterExtractor = modelCache.splitterExtractor;
-				logger.debug("Using cached splitterExtractor");
-			} else {
-				logger.debug("Loading splitterExtractor from pipeline...");
-				this.splitterExtractor = (await pipeline(
-					"feature-extraction",
-					"Xenova/all-MiniLM-L6-v2",
-					{ dtype: "q4" },
-				)) as Extractor;
-				modelCache.splitterExtractor = this.splitterExtractor;
-			}
+			await this.db.initialize(this.embeddingDimension);
 
-			if (this.mocks.rerankerModel) {
-				this.rerankerModel = this.mocks.rerankerModel;
-				logger.debug("Using mock rerankerModel");
-			} else if (modelCache.rerankerModel) {
-				this.rerankerModel = modelCache.rerankerModel;
-				logger.debug("Using cached rerankerModel");
-			} else {
-				logger.debug("Loading rerankerModel from pretrained...");
-				this.rerankerModel =
-					(await AutoModelForSequenceClassification.from_pretrained(
-						"Xenova/bge-reranker-base",
-					)) as RerankerModel;
-				modelCache.rerankerModel = this.rerankerModel;
-			}
-
-			if (this.mocks.rerankerTokenizer) {
-				this.rerankerTokenizer = this.mocks.rerankerTokenizer;
-				logger.debug("Using mock rerankerTokenizer");
-			} else if (modelCache.rerankerTokenizer) {
-				this.rerankerTokenizer = modelCache.rerankerTokenizer;
-				logger.debug("Using cached rerankerTokenizer");
-			} else {
-				logger.debug("Loading rerankerTokenizer from pretrained...");
-				this.rerankerTokenizer = (await AutoTokenizer.from_pretrained(
-					"Xenova/bge-reranker-base",
-				)) as RerankerTokenizer;
-				modelCache.rerankerTokenizer = this.rerankerTokenizer;
-			}
-
-			if (!this.mocks.extractor) {
-				logger.info(
-					`Models loaded: ${this.modelName} (Embedding) & bge-reranker-base (Reranker)`,
-				);
-			}
-
-			const dbUrl = process.env.POSTGRES_URL;
-			const _isDocker = fs.existsSync("/.dockerenv");
-
-			if (dbUrl) {
-				this.sql = postgres(dbUrl);
-				logger.info("External Postgres connection initialized.");
-			} else {
-				const dbPath =
-					this.dbPathOverride || path.join(process.cwd(), "raglike_db");
-
-				// Patch vector extension to handle Bun's file:// URL stringification in tests
-				const patchedVector = {
-					...vector,
-					setup: async (pg: PGlite, emscriptenOpts: unknown) => {
-						const result = await vector.setup(
-							pg,
-							emscriptenOpts as Parameters<typeof vector.setup>[1],
-						);
-						if (
-							result.bundlePath instanceof URL &&
-							result.bundlePath.protocol === "file:"
-						) {
-							// Use realpathSync to resolve any potential symlink issues and ensure plain path
-							const plainPath = fs.realpathSync(
-								fileURLToPath(result.bundlePath),
-							);
-							logger.debug(
-								{ path: plainPath },
-								"PGlite vector bundle resolved",
-							);
-							result.bundlePath = plainPath;
-						}
-						return result;
-					},
-				};
-
-				this.pglite = await PGlite.create(dbPath, {
-					extensions: { vector: patchedVector },
-				});
-				logger.info(
-					{ path: dbPath },
-					"Local PGlite Vector Engine persistent storage initialized.",
-				);
-			}
-
-			await this.ensureSchema();
 			this.initialized = true;
 			this.initializing = null;
 		})();
@@ -341,183 +66,24 @@ export class VectorEngine {
 		return this.initializing;
 	}
 
-	/**
-	 * Clean up resources (database connections, etc.)
-	 */
-	async destroy() {
-		if (this.pglite) {
-			await this.pglite.close();
-			this.pglite = undefined;
-		}
-		if (this.sql) {
-			await this.sql.end();
-			this.sql = undefined;
-		}
-		this.initialized = false;
-	}
-
-	/**
-	 * Support for 'using' keyword (Explicit Resource Management)
-	 */
-	async [Symbol.asyncDispose]() {
-		await this.destroy();
-	}
-
-	private async ensureSchema() {
-		await this.exec("CREATE EXTENSION IF NOT EXISTS vector;");
-		try {
-			await this.exec("SET hnsw.ef_search = 100;");
-		} catch (e) {
-			logger.warn(
-				e,
-				"Failed to set hnsw.ef_search. It might not be supported yet or the index is not loaded.",
-			);
-		}
-
-		// Check if the table exists and if the embedding dimension matches
-		const tableExists = await this.query<{ exists: boolean }>(
-			"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'markdown_chunks')",
-			[],
-		);
-
-		if (tableExists.rows[0].exists) {
-			const dimRes = await this.query<{ atttypmod: number }>(
-				"SELECT atttypmod FROM pg_attribute WHERE attrelid = 'markdown_chunks'::regclass AND attname = 'embedding'",
-				[],
-			);
-			if (
-				dimRes.rows.length > 0 &&
-				dimRes.rows[0].atttypmod !== this.embeddingDimension
-			) {
-				logger.warn(
-					{
-						oldDim: dimRes.rows[0].atttypmod,
-						newDim: this.embeddingDimension,
-					},
-					"Vector dimension mismatch detected. Dropping table for re-ingestion.",
-				);
-				await this.exec("DROP TABLE markdown_chunks;");
-			}
-		}
-
-		const schema = VectorEngine.SCHEMA.replace(
-			"vector(768)",
-			`vector(${this.embeddingDimension})`,
-		);
-		await this.exec(schema);
-
-		// Step 4: Add HNSW index for high-performance vector search with tuned parameters
-		// We drop and recreate to ensure parameters like m and ef_construction are applied
-		await this.exec("DROP INDEX IF EXISTS idx_markdown_chunks_embedding;");
-		await this.exec(
-			"CREATE INDEX idx_markdown_chunks_embedding ON markdown_chunks USING hnsw (embedding vector_ip_ops) WITH (m = 24, ef_construction = 100);",
-		);
-
-		// Ensure new columns exist for existing databases and update search_vector if needed
-		try {
-			await this.exec(
-				"ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS last_modified TIMESTAMP;",
-			);
-			await this.exec(
-				"ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS word_count INTEGER;",
-			);
-			await this.exec(
-				"ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS repository_id TEXT;",
-			);
-			await this.exec(
-				"ALTER TABLE markdown_chunks ADD COLUMN IF NOT EXISTS is_code BOOLEAN DEFAULT FALSE;",
-			);
-
-			// Check if search_vector columns already exist to avoid redundant drops and DDL locks
-			const hasSearchVector = await this.query<{ exists: boolean }>(
-				`SELECT EXISTS (
-					SELECT FROM information_schema.columns 
-					WHERE table_name = 'markdown_chunks' AND column_name = 'search_vector'
-				)`,
-				[],
-			);
-
-			if (!hasSearchVector.rows[0].exists) {
-				await this.exec(`
-					ALTER TABLE markdown_chunks ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
-						setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
-						setweight(to_tsvector('english', coalesce(content, '')), 'B')
-					) STORED;
-				`);
-
-				await this.exec(`
-					ALTER TABLE markdown_chunks ADD COLUMN search_vector_simple tsvector GENERATED ALWAYS AS (
-						setweight(to_tsvector('simple', coalesce(heading, '')), 'A') || 
-						setweight(to_tsvector('simple', coalesce(content, '')), 'B')
-					) STORED;
-				`);
-			}
-		} catch (_e) {
-			logger.warn(
-				"Could not update schema columns, they might already exist or the syntax is unsupported by this version.",
-			);
-		}
-
-		// Add GIN index for full-text search (replacing GIST if it existed for better performance)
-		await this.exec("DROP INDEX IF EXISTS idx_markdown_chunks_search_vector;");
-		await this.exec(
-			"CREATE INDEX idx_markdown_chunks_search_vector ON markdown_chunks USING GIN (search_vector);",
-		);
-
-		await this.exec(
-			"DROP INDEX IF EXISTS idx_markdown_chunks_search_vector_simple;",
-		);
-		await this.exec(
-			"CREATE INDEX idx_markdown_chunks_search_vector_simple ON markdown_chunks USING GIN (search_vector_simple);",
-		);
-		logger.info("Database subsystem fully ready and schema verified.");
-	}
-
-	static SCHEMA = `
-    CREATE TABLE IF NOT EXISTS markdown_chunks (
-      id BIGSERIAL PRIMARY KEY,
-      file_path TEXT,
-      heading TEXT,
-      content TEXT,
-      embedding vector(768),
-      last_modified TIMESTAMP,
-      word_count INTEGER,
-      repository_id TEXT,
-      is_code BOOLEAN DEFAULT FALSE,
-      search_vector tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('english', coalesce(heading, '')), 'A') || 
-        setweight(to_tsvector('english', coalesce(content, '')), 'B')
-      ) STORED,
-      search_vector_simple tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('simple', coalesce(heading, '')), 'A') || 
-        setweight(to_tsvector('simple', coalesce(content, '')), 'B')
-      ) STORED
-    );
-  `;
-
 	async exec(query: string): Promise<void> {
-		if (this.pglite) {
-			await this.pglite.exec(query);
-		} else if (this.sql) {
-			await this.sql.unsafe(query);
-		} else {
-			throw new Error("Engine not initialized.");
-		}
+		await this.db.exec(query);
 	}
 
 	async query<T extends Record<string, unknown>>(
 		query: string,
 		params: unknown[],
 	): Promise<{ rows: T[] }> {
-		if (this.pglite) {
-			const res = await this.pglite.query<T>(query, params);
-			return { rows: res.rows };
-		}
-		if (this.sql) {
-			const rows = await this.sql.unsafe<T[]>(query, params);
-			return { rows };
-		}
-		throw new Error("Engine not initialized.");
+		return this.db.query<T>(query, params);
+	}
+
+	async destroy() {
+		await this.db.destroy();
+		this.initialized = false;
+	}
+
+	async [Symbol.asyncDispose]() {
+		await this.destroy();
 	}
 
 	async indexDirectory(dirPath: string, repositoryId?: string) {
@@ -556,17 +122,8 @@ export class VectorEngine {
 		let finalFilePath = filePath;
 
 		if (filePath.endsWith(".pdf")) {
-			logger.info({ file: filePath }, "Converting PDF to markdown...");
 			try {
-				const pdfBuffer = fs.readFileSync(filePath);
-				const pdfData = await pdf2md(pdfBuffer);
-				content = Array.isArray(pdfData) ? pdfData.join("\n") : pdfData;
-				logger.info(
-					{ file: filePath, contentLength: content.length },
-					"PDF conversion successful.",
-				);
-
-				// Save converted markdown and remove original PDF
+				content = await this.chunker.convertPdfToMarkdown(filePath);
 				finalFilePath = filePath.replace(/\.pdf$/i, ".md");
 				fs.writeFileSync(finalFilePath, content);
 				fs.unlinkSync(filePath);
@@ -585,40 +142,29 @@ export class VectorEngine {
 			content = fs.readFileSync(filePath, "utf-8");
 		}
 
-		// Clean data: strip base64 images, markdown images, HTML images, and image links
 		const cleanedContent = content
 			.replace(/data:[^;]+;base64,[^)\s"']*/g, "[base64 image removed]")
-			.replace(/!\[.*?\]\(.*?\)/g, "") // Remove Markdown images
-			.replace(/<img.*?>/g, "") // Remove HTML image tags
+			.replace(/!\[.*?\]\(.*?\)/g, "")
+			.replace(/<img.*?>/g, "")
 			.replace(
 				/\[.*?\]\(.*?\.(?:png|jpg|jpeg|gif|webp|svg|pdf)(?:\?.*?)?\)/gi,
 				"",
-			) // Remove links to images/pdfs
-			.replace(/\n{3,}/g, "\n\n"); // Collapse multiple newlines
+			)
+			.replace(/\n{3,}/g, "\n\n");
 
 		if (cleanedContent.trim().length === 0) {
-			logger.warn(
-				{ file: filePath },
-				"File is empty or conversion yielded no text. Skipping.",
-			);
+			logger.warn({ file: filePath }, "File is empty. Skipping.");
 			return;
 		}
 
 		const relativePath = path.relative(process.cwd(), finalFilePath);
 		const stats = fs.statSync(finalFilePath);
 
-		// Remove old chunks for this file
-		await this.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
+		await this.db.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
 			relativePath,
 		]);
-		logger.info(
-			{ file: relativePath },
-			"Document chunks removed from database.",
-		);
 
-		// Step 1: Structural AST Split
-		const sections = this.structuralSplit(cleanedContent);
-
+		const sections = this.chunker.structuralSplit(cleanedContent);
 		const allChunksToEmbed: { heading: string; text: string }[] = [];
 
 		for (let i = 0; i < sections.length; i++) {
@@ -626,29 +172,28 @@ export class VectorEngine {
 			const prevSection = i > 0 ? sections[i - 1] : null;
 			const nextSection = i < sections.length - 1 ? sections[i + 1] : null;
 
-			// Step 2: Semantic Sub-Split within each section
-			const subChunks = await this.semanticSubSplit(section.nodes);
+			const subChunks = await this.chunker.semanticSubSplit(
+				section.nodes,
+				(blocks) => this.models.getSplitterVectors(blocks),
+			);
 
-			// Step 3: Implement Context Slop (Boundary Enrichment)
 			if (subChunks.length > 0) {
-				// Prepend last sentence of previous section to first chunk
 				if (prevSection) {
 					const prevText = toMarkdown({
 						type: "root",
 						children: prevSection.nodes,
 					});
-					const lastSentence = this.getLastSentence(prevText);
+					const lastSentence = this.chunker.getLastSentence(prevText);
 					if (lastSentence && lastSentence.length > 5) {
 						subChunks[0] = `...${lastSentence}\n\n${subChunks[0]}`;
 					}
 				}
-				// Append first sentence of following section to last chunk
 				if (nextSection) {
 					const nextText = toMarkdown({
 						type: "root",
 						children: nextSection.nodes,
 					});
-					const firstSentence = this.getFirstSentence(nextText);
+					const firstSentence = this.chunker.getFirstSentence(nextText);
 					if (firstSentence && firstSentence.length > 5) {
 						subChunks[subChunks.length - 1] = `${
 							subChunks[subChunks.length - 1]
@@ -659,7 +204,7 @@ export class VectorEngine {
 
 			for (const chunkText of subChunks) {
 				const trimmed = chunkText.trim();
-				if (trimmed.length < 20) continue; // Skip very short noise chunks
+				if (trimmed.length < 20) continue;
 
 				allChunksToEmbed.push({
 					heading: section.breadcrumbs.join(" > "),
@@ -668,26 +213,19 @@ export class VectorEngine {
 			}
 		}
 
-		// Step 4: Batch process embeddings
 		if (allChunksToEmbed.length > 0) {
 			const textsToEmbed = allChunksToEmbed.map(
 				(c) => `${c.heading}\n${c.text}`,
 			);
-			const embeddings = await this.getEmbeddingsBatch(textsToEmbed);
+			const embeddings = await this.models.getEmbeddingsBatch(textsToEmbed);
 
 			for (let i = 0; i < allChunksToEmbed.length; i++) {
 				const chunk = allChunksToEmbed[i];
 				const embedding = embeddings[i];
 				const embeddingStr = `[${embedding.join(",")}]`;
 				const hasCode = chunk.text.includes("```");
-				if (hasCode) {
-					logger.debug(
-						{ file: relativePath, heading: chunk.heading },
-						"Detected code block in chunk",
-					);
-				}
 
-				await this.query(
+				await this.db.query(
 					`INSERT INTO markdown_chunks (file_path, heading, content, embedding, last_modified, word_count, repository_id, is_code) 
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 					[
@@ -706,253 +244,13 @@ export class VectorEngine {
 
 		logger.info(
 			{ file: relativePath, chunks: allChunksToEmbed.length },
-			"File indexed successfully with batch processing.",
+			"File indexed successfully.",
 		);
-
 		return relativePath;
 	}
 
-	private getFirstSentence(text: string): string {
-		const cleaned = text.replace(/#+\s+.*?\n/g, "").trim(); // Remove headings
-		const match = cleaned.match(/^.*?[.!?](?:\s+|$)/s);
-		return match ? match[0].trim() : cleaned.slice(0, 100);
-	}
-
-	private getLastSentence(text: string): string {
-		const cleaned = text.trim();
-		// Find the last sentence (text ending with a sentence terminator)
-		const match = cleaned.match(/(?:^|[\n.!?])\s*([^.!?\n]+[.!?])\s*$/s);
-		return match ? match[1].trim() : cleaned.slice(-100);
-	}
-
 	async getPublicEmbeddings(texts: string[]): Promise<number[][]> {
-		return this.getEmbeddingsBatch(texts);
-	}
-
-	private async getEmbeddingsBatch(texts: string[]): Promise<number[][]> {
-		const apiUrl = process.env.API_EMBEDDING_URL;
-		if (apiUrl) {
-			return this.fetchExternalEmbeddings(texts, apiUrl);
-		}
-
-		if (!this.extractor) throw new Error("Extractor not initialized.");
-
-		// Handle empty case
-		if (texts.length === 0) return [];
-
-		const output = await this.extractor(texts, {
-			pooling: "mean",
-			normalize: true,
-		});
-
-		return this.sliceBatchOutput(output as TransformerOutput, texts.length);
-	}
-
-	private async fetchExternalEmbeddings(
-		texts: string[],
-		url: string,
-	): Promise<number[][]> {
-		if (texts.length === 0) return [];
-
-		try {
-			const response = await fetch(url, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: process.env.API_EMBEDDING_TOKEN
-						? `Bearer ${process.env.API_EMBEDDING_TOKEN}`
-						: "",
-				},
-				body: JSON.stringify({ texts }),
-			});
-
-			if (!response.ok) {
-				const errorText = await response.text();
-				throw new Error(
-					`External embedding API failed: ${response.status} ${errorText}`,
-				);
-			}
-
-			const result = (await response.json()) as { embeddings: number[][] };
-			if (!result.embeddings || !Array.isArray(result.embeddings)) {
-				throw new Error("Invalid response format from external embedding API");
-			}
-
-			return result.embeddings;
-		} catch (error) {
-			logger.error(
-				{ error, url },
-				"Failed to fetch embeddings from external API",
-			);
-			throw error;
-		}
-	}
-
-	private sliceBatchOutput(
-		output: TransformerOutput,
-		batchSize: number,
-	): number[][] {
-		const data = output.data;
-		if (batchSize === 0) return [];
-		const dimension = data.length / batchSize;
-		if (data.length % batchSize !== 0) {
-			logger.error(
-				{ dataLength: data.length, batchSize },
-				"Embedding data length is not a multiple of batch size",
-			);
-		}
-		const results: number[][] = [];
-
-		for (let i = 0; i < batchSize; i++) {
-			const start = i * dimension;
-			const end = start + dimension;
-			results.push(Array.from(data.slice(start, end)));
-		}
-
-		return results;
-	}
-
-	private structuralSplit(
-		content: string,
-	): { breadcrumbs: string[]; nodes: Content[] }[] {
-		const tree = fromMarkdown(content);
-		const sections: { breadcrumbs: string[]; nodes: Content[] }[] = [];
-
-		const processNodes = (nodes: Content[], breadcrumbs: string[]) => {
-			let currentSectionContent: Content[] = [];
-
-			for (const node of nodes) {
-				if (node.type === "heading") {
-					// Flush current content to previous section
-					if (currentSectionContent.length > 0) {
-						sections.push({
-							breadcrumbs: [...breadcrumbs],
-							nodes: currentSectionContent,
-						});
-						currentSectionContent = [];
-					}
-					// Update breadcrumbs based on heading level
-					const level = node.depth;
-					const headingText = mdastToString(node);
-					breadcrumbs = breadcrumbs.slice(0, level - 1);
-					breadcrumbs[level - 1] = headingText;
-				} else {
-					currentSectionContent.push(node);
-				}
-			}
-
-			// Final flush
-			if (currentSectionContent.length > 0) {
-				sections.push({
-					breadcrumbs: [...breadcrumbs],
-					nodes: currentSectionContent,
-				});
-			}
-		};
-
-		processNodes(tree.children, []);
-		return sections;
-	}
-
-	private async semanticSubSplit(nodes: Content[]): Promise<string[]> {
-		const apiUrl = process.env.API_EMBEDDING_URL;
-		if (!this.splitterExtractor && !apiUrl) {
-			return [toMarkdown({ type: "root", children: nodes }).trim()];
-		}
-
-		// Convert each AST node to a separate text block to preserve markdown structure exactly
-		const blocks = nodes
-			.map((node) => toMarkdown({ type: "root", children: [node] }).trim())
-			.filter((b) => b.length > 0);
-		if (blocks.length <= 1) {
-			return [toMarkdown({ type: "root", children: nodes }).trim()];
-		}
-
-		// Batch embedding for all blocks
-		let vectors: Float32Array[] = [];
-
-		if (apiUrl) {
-			const embeddings = await this.fetchExternalEmbeddings(blocks, apiUrl);
-			vectors = embeddings.map((v) => new Float32Array(v));
-		} else if (this.splitterExtractor) {
-			const output = await this.splitterExtractor(blocks, {
-				pooling: "mean",
-				normalize: true,
-			});
-
-			// Use dynamic dimension detection based on data length and batch size
-			const data = (output as TransformerOutput).data;
-			const dimension = data.length / blocks.length;
-			for (let i = 0; i < blocks.length; i++) {
-				vectors.push(data.slice(i * dimension, (i + 1) * dimension));
-			}
-		} else {
-			return [toMarkdown({ type: "root", children: nodes }).trim()];
-		}
-
-		const chunks: string[] = [];
-		let currentChunkBlocks: string[] = [blocks[0]];
-
-		for (let i = 0; i < vectors.length - 1; i++) {
-			const similarity = this.cosineSimilarity(vectors[i], vectors[i + 1]);
-			const nextIsCode = blocks[i + 1].trim().startsWith("```");
-
-			// Lower threshold (0.35) and ensure we don't split chunks that are too small (< 200 chars).
-			// Force-bundle code blocks (nextIsCode) to preserve natural language context.
-			if (
-				!nextIsCode &&
-				similarity < 0.35 &&
-				currentChunkBlocks.join("\n\n").length > 200
-			) {
-				chunks.push(currentChunkBlocks.join("\n\n"));
-				currentChunkBlocks = [blocks[i + 1]];
-			} else {
-				currentChunkBlocks.push(blocks[i + 1]);
-			}
-		}
-		chunks.push(currentChunkBlocks.join("\n\n"));
-
-		// Post-process: ensure no chunk is TOO large (fallback to recursive).
-		// We do NOT recursively split chunks that contain code blocks to prevent breaking code fences/syntax.
-		const finalChunks: string[] = [];
-		for (const chunk of chunks) {
-			const hasCode = chunk.includes("```");
-			if (chunk.length > 1200 && !hasCode) {
-				const recursiveSplitter = new RecursiveCharacterTextSplitter({
-					chunkSize: 1000,
-					chunkOverlap: 250,
-				});
-				const subParts = await recursiveSplitter.splitText(chunk);
-				finalChunks.push(...subParts);
-			} else {
-				finalChunks.push(chunk);
-			}
-		}
-
-		return finalChunks;
-	}
-
-	private cosineSimilarity(v1: Float32Array, v2: Float32Array): number {
-		let dot = 0;
-		for (let i = 0; i < v1.length; i++) {
-			dot += v1[i] * v2[i];
-		}
-		return dot; // Assumes normalized vectors
-	}
-
-	private async getEmbedding(text: string): Promise<number[]> {
-		const apiUrl = process.env.API_EMBEDDING_URL;
-		if (apiUrl) {
-			const results = await this.fetchExternalEmbeddings([text], apiUrl);
-			return results[0];
-		}
-
-		if (!this.extractor) throw new Error("Extractor not initialized.");
-		const output = (await this.extractor(text, {
-			pooling: "mean",
-			normalize: true,
-		})) as TransformerOutput;
-		return Array.from(output.data);
+		return this.models.getEmbeddingsBatch(texts);
 	}
 
 	async search(
@@ -966,28 +264,25 @@ export class VectorEngine {
 			{ query, limit, rerank, repositoryId, hybrid },
 			"Performing search",
 		);
-		const queryVector = await this.getEmbedding(query);
+		const queryVector = await this.models.getEmbedding(query);
 		const queryVectorStr = `[${queryVector.join(",")}]`;
 		const queryText = query.trim();
 
-		const VECTOR_WEIGHT = 1.8; // High semantic priority
-		const TEXT_WEIGHT = 1.8; // High FTS priority
-		const KEYWORD_WEIGHT = 1.8; // High simple keyword priority for code matches
-		const HEADING_WEIGHT = 0.8; // Lower heading bias
+		const VECTOR_WEIGHT = 1.8;
+		const TEXT_WEIGHT = 1.8;
+		const KEYWORD_WEIGHT = 1.8;
+		const HEADING_WEIGHT = 0.8;
 		const K = 60;
-		// RECALL_LIMIT ensures we consider enough candidates for RRF fusion
 		const RECALL_LIMIT = Math.max(200, rerank ? limit * 10 : limit * 5);
 
 		let results: MarkdownChunk[];
 
 		if (hybrid) {
-			// Split query into words for heading match fallback
 			const queryWords = queryText
 				.split(/\s+/)
 				.filter((w) => w.length > 0)
 				.map((w) => `%${w}%`);
 
-			// Technical boost: check if query mentions common technical terms or code syntax patterns
 			const isTechnicalQuery =
 				/mermaid|flow|code|const|function|interface|type|class|graph|sequence|diagram|\b[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\b|\b[a-zA-Z_][a-zA-Z0-9_]*\(\)|\b\.[a-zA-Z0-9]+\b/i.test(
 					queryText,
@@ -995,10 +290,10 @@ export class VectorEngine {
 			const TECH_BOOST = isTechnicalQuery ? 1.2 : 1.0;
 
 			const queryParams: unknown[] = [
-				queryVectorStr, // $1
-				queryText, // $2
-				limit, // $3
-				RECALL_LIMIT, // $4
+				queryVectorStr,
+				queryText,
+				limit,
+				RECALL_LIMIT,
 			];
 
 			let repoFilter = "";
@@ -1006,8 +301,8 @@ export class VectorEngine {
 
 			if (repositoryId) {
 				repoFilter = "AND repository_id = $5";
-				queryParams.push(repositoryId); // $5
-				queryParams.push(queryWords); // $6
+				queryParams.push(repositoryId);
+				queryParams.push(queryWords);
 				headingMatchQuery = `
           SELECT id, row_number() OVER (
             ORDER BY 
@@ -1024,7 +319,7 @@ export class VectorEngine {
           LIMIT $4
         `;
 			} else {
-				queryParams.push(queryWords); // $5
+				queryParams.push(queryWords);
 				headingMatchQuery = `
           SELECT id, row_number() OVER (
             ORDER BY 
@@ -1041,7 +336,7 @@ export class VectorEngine {
         `;
 			}
 
-			const res = await this.query<
+			const res = await this.db.query<
 				MarkdownChunk & { distance: number; rrf_score: number }
 			>(
 				`
@@ -1096,7 +391,7 @@ export class VectorEngine {
 			results = res.rows;
 		} else {
 			const repoFilter = repositoryId ? "AND repository_id = $3" : "";
-			const res = await this.query<
+			const res = await this.db.query<
 				MarkdownChunk & { distance: number; rrf_score: number }
 			>(
 				`
@@ -1122,32 +417,17 @@ export class VectorEngine {
 			results = res.rows;
 		}
 
-		logger.debug({ count: results.length }, "Initial search results found");
-
-		if (rerank && this.rerankerModel && this.rerankerTokenizer) {
-			logger.info(
-				{ count: results.length },
-				"Reranking search results via cross-encoder...",
-			);
+		if (rerank && this.models.hasReranker) {
 			const passages = results.map(
 				(item) => `${item.heading}\n${item.content}`,
 			);
-			const queries = new Array(passages.length).fill(queryText);
+			const { logits } = await this.models.rerank(queryText, passages);
 
-			const inputs = await this.rerankerTokenizer(queries, {
-				text_pair: passages,
-				padding: true,
-				truncation: true,
-			});
-
-			const { logits } = await this.rerankerModel(inputs);
-
-			const reranked = results.map((item, i) => ({
-				...item,
-				rerank_score: logits.data[i] as number,
-			}));
-
-			results = reranked
+			results = results
+				.map((item, i) => ({
+					...item,
+					rerank_score: logits.data[i] as number,
+				}))
 				.sort((a, b) => (b.rerank_score || 0) - (a.rerank_score || 0))
 				.slice(0, limit);
 		}
@@ -1156,19 +436,22 @@ export class VectorEngine {
 	}
 
 	async hasData(): Promise<boolean> {
-		const res = await this.query("SELECT id FROM markdown_chunks LIMIT 1", []);
+		const res = await this.db.query(
+			"SELECT id FROM markdown_chunks LIMIT 1",
+			[],
+		);
 		return res.rows.length > 0;
 	}
 
 	async getChunkNeighbors(id: number) {
-		const chunkRes = await this.query<{ file_path: string }>(
+		const chunkRes = await this.db.query<{ file_path: string }>(
 			"SELECT file_path FROM markdown_chunks WHERE id = $1",
 			[id],
 		);
 		if (chunkRes.rows.length === 0 || !chunkRes.rows[0]) return null;
 		const filePath = chunkRes.rows[0].file_path;
 
-		const prevRes = await this.query<{
+		const prevRes = await this.db.query<{
 			id: string;
 			heading: string;
 			content: string;
@@ -1177,7 +460,7 @@ export class VectorEngine {
 			[filePath, id],
 		);
 
-		const nextRes = await this.query<{
+		const nextRes = await this.db.query<{
 			id: string;
 			heading: string;
 			content: string;
@@ -1195,10 +478,7 @@ export class VectorEngine {
 	async readDocument(filePath: string): Promise<string | null> {
 		const fullPath = path.resolve(process.cwd(), filePath);
 		if (!fullPath.startsWith(process.cwd())) {
-			logger.warn(
-				{ filePath },
-				"Security violation: Attempted to read file outside of workspace.",
-			);
+			logger.warn({ filePath }, "Security violation.");
 			return null;
 		}
 		if (!fs.existsSync(fullPath)) return null;
@@ -1206,9 +486,9 @@ export class VectorEngine {
 	}
 
 	async removeDocument(filePath: string) {
-		await this.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
+		await this.db.query("DELETE FROM markdown_chunks WHERE file_path = $1", [
 			filePath,
 		]);
-		logger.info({ file: filePath }, "Document removed from database.");
+		logger.info({ file: filePath }, "Document removed.");
 	}
 }
